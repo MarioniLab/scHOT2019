@@ -1,0 +1,1854 @@
+---
+title: "scHOT analysis of Developmental liver data"
+author: "Shila Ghazanfar"
+date: "27/10/2019"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 16 
+                     fig_height: 14
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, cache = TRUE,cache.lazy = FALSE)
+```
+
+# Set up
+
+```{r}
+source("../functions.R")
+tol12qualitative=c("#332288", "#6699CC", "#88CCEE", "#44AA99", "#117733", "#999933", "#DDCC77", "#661100", "#CC6677", "#AA4466", "#882255", "#AA4499")
+if (!file.exists("output")) {
+  system("mkdir output")
+}
+parallel = TRUE
+ncores = 10
+```
+
+# Load packages
+
+```{r}
+if (!require(DCARS)) {
+  library(devtools)
+  devtools::install_github("shazanfar/DCARS")
+}
+library(DCARS)
+library(ggplot2)
+library(gplots)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+library(reshape)
+library(scattermore)
+library(dynamicTreeCut)
+library(ComplexHeatmap)
+library(GO.db)
+library(org.Mm.eg.db)
+library(stringr)
+library(matrixStats)
+library(ggforce)
+library(patchwork)
+library(ggpubr)
+library(cowplot)
+library(parallel)
+library(monocle)
+library(ggthemes)
+library(igraph)
+library(gtools)
+library(plotly)
+library(ggrepel)
+library(ggridges)
+library(M3Drop)
+library(scMerge)
+library(corrplot)
+library(circlize)
+```
+
+# Process Developmental liver data from URL
+
+```{r}
+if (!file.exists("output/liver_pseudotime.Rds")) {
+  
+  # data webpage https://sydneybiox.github.io/scMerge/articles/Mouse_Liver_Data/Mouse_Liver_Data.html
+  # data file URL http://www.maths.usyd.edu.au/u/yingxinl/wwwnb/scMergeData/liver_scMerge.rds
+  # might take a minute to download
+  liver_scMerge = readRDS(url("http://www.maths.usyd.edu.au/u/yingxinl/wwwnb/scMergeData/liver_scMerge.rds"))
+  
+  dim(assay(liver_scMerge,"scMerge"))
+  assay(liver_scMerge,"scMerge")[1:5,1:5]
+  table(liver_scMerge$cellTypes, liver_scMerge$batch)
+  
+  hepa_cellTypes = c("hepatoblast/hepatocyte","cholangiocyte")
+  liver_scMerge$isHepa = ifelse(liver_scMerge$cellTypes %in% hepa_cellTypes, "Hepa", "Other")
+  
+  liver_scMerge <- runPCA(liver_scMerge, exprs_values = "scMerge", ncomponents = 50)
+  set.seed(484)
+  liver_scMerge <- runTSNE(liver_scMerge, use_dimred = "PCA")
+  tsne_hepa = reducedDim(liver_scMerge, "TSNE")[liver_scMerge$isHepa == "Hepa",]
+  bounding_df = data.frame(
+    x = 1.1*range(tsne_hepa[,1])[c(1,2,2,1,1)],
+    y = 1.1*range(tsne_hepa[,2])[c(1,1,2,2,1)]
+  )
+  tsne_df = as.data.frame(cbind(
+    colData(liver_scMerge),
+    reducedDim(liver_scMerge, "TSNE")[,1:2]
+  ))
+  
+  g = ggplot(tsne_df, aes(x = V1, y = V2, colour = cellTypes)) +
+    geom_point(size = 2.5) +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    xlab("TSNE 1") +
+    ylab("TSNE 2") +
+    theme(axis.title = element_text(size = 30)) +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    theme(legend.text = element_text(size = 10)) +
+    scale_colour_gdocs() +
+    geom_path(data = bounding_df, aes(x = x, y = y), 
+              linetype = "dashed", colour = "red",
+              size = 1) +
+    guides(colour=guide_legend(nrow=3,byrow=TRUE)) +
+    NULL
+  g
+  ggsave(g, file = "output/UMAP_liver_scMerge.pdf", height = 7.5, width = 7)
+  
+  liver_scMerge$Estage = regmatches(colnames(liver_scMerge), regexpr("E[0-9][0-9].[0-9]|E[0-9].[0-9]", colnames(liver_scMerge)))
+  
+  table(liver_scMerge$Estage, liver_scMerge$isHepa, liver_scMerge$batch)
+  
+  tfac = list(liver_scMerge$Estage, liver_scMerge$batch)
+  liver_scMerge$width = unsplit(tapply(rep(1,ncol(liver_scMerge)), tfac, sum), tfac)
+  liver_scMerge$width_transformed = sqrt(liver_scMerge$width)
+  liver_scMerge$isHepaSwitch = factor(liver_scMerge$isHepa, levels = c("Other","Hepa"))
+  liver_scMerge$Estage = factor(liver_scMerge$Estage, levels = gtools::mixedsort(unique(liver_scMerge$Estage)))
+  
+  liver_scMerge2 = liver_scMerge[,liver_scMerge$batch %in% subset(colData(liver_scMerge), isHepa == "Hepa")$batch]
+  
+  g = ggplot(as.data.frame(colData(liver_scMerge2)),
+             aes(y = 1, fill = isHepaSwitch)) +
+    geom_bar(aes(width = width_transformed, x = 0 + width_transformed/2), 
+             stat = "identity", position = "fill") +
+    coord_polar("y", start = 0) +
+    # facet_grid(batch ~ Estage, switch = "y") + 
+    facet_grid(Estage ~ batch, switch = "y") +
+    theme_minimal() +
+    theme(strip.text.y = element_text(angle = 180)) +
+    theme(strip.text.x = element_text(angle = 90)) +
+    theme(panel.grid = element_blank()) +
+    theme(axis.text = element_blank()) +
+    theme(strip.placement = "inside") +
+    theme(legend.position = "bottom") +
+    theme(legend.direction = "vertical") +
+    guides(fill = guide_legend(reverse = TRUE)) +
+    labs(fill = "") +
+    scale_fill_manual(values = c("Hepa" = "red", "Other" = "black"),
+                      labels = c("Hepa" = "Hepatic cells", "Other" = "Other cells")) +
+    theme(strip.text.y = element_text(size = 13)) +
+    theme(strip.text.x = element_text(size = 15)) +
+    theme(legend.text = element_text(size = 20)) +
+    xlab("") +
+    ylab("") +
+    NULL
+  g
+  ggsave(g, file = "output/hepatic_cells_piechart.pdf", height = 8, width = 6)
+  
+  table(liver_scMerge$cellTypes,liver_scMerge$batch)
+  
+  ggplot(melt(table(liver_scMerge$cellTypes,liver_scMerge$batch)),
+         aes(x = Var.2, group = Var.1, y = value, fill = Var.1)) + geom_bar(stat = "identity") +
+    theme_minimal() +
+    scale_fill_brewer(palette = "Spectral")
+  
+  ggplot(melt(table(liver_scMerge$cellTypes,liver_scMerge$batch)),
+         aes(x = Var.1, group = Var.2, y = value, fill = Var.2)) + geom_bar(stat = "identity") +
+    theme_minimal() +
+    scale_fill_brewer(palette = "RdBu")
+  
+  hepa_scMerge = liver_scMerge[,liver_scMerge$isHepa == "Hepa"]
+  
+  var.fit <- trendVar(hepa_scMerge, assay.type = "scMerge", parametric=TRUE, loess.args=list(span=0.3), use.spikes = FALSE)
+  var.out <- decomposeVar(hepa_scMerge, var.fit, assay.type = "scMerge")
+  
+  pdf(file = "output/HVG_selection.pdf", height = 8, width = 8)
+  plot(var.out$mean, var.out$total, pch=16, cex=0.6, xlab="Mean log-expression", 
+       ylab="Variance of log-expression")
+  curve(var.fit$trend(x), col="dodgerblue", lwd=2, add=TRUE)
+  
+  seqvals = seq(min(var.out$mean), max(var.out$mean), length.out = 1000)
+  peakExp = seqvals[which.max(var.fit$trend(seqvals))]
+  
+  hvg.out <- var.out[which(var.out$FDR <= 0.05 & var.out$mean > peakExp),]
+  nrow(hvg.out)
+  hvg.out <- hvg.out[order(hvg.out$bio, decreasing=TRUE),] 
+  points(var.out$mean[which(var.out$FDR <= 0.05 & var.out$mean > peakExp)], 
+         var.out$total[which(var.out$FDR <= 0.05 & var.out$mean > peakExp)], col="red", pch=16)
+  abline(v = peakExp, lty = 2, col = "black")
+  dev.off()
+  
+  head(hvg.out)
+  
+  HVG = sort(rownames(hvg.out))
+  
+  length(HVG)
+  
+  geneNames <- data.frame(gene_short_name=rownames(hepa_scMerge))
+  rownames(geneNames) <- rownames(hepa_scMerge)
+  
+  fd <- new("AnnotatedDataFrame", data = geneNames)
+  pd <- data.frame(cellType = hepa_scMerge$cellTypes,batch = hepa_scMerge$batch)
+  rownames(pd) <- colnames(hepa_scMerge)
+  pd <- new("AnnotatedDataFrame", data = pd)
+  
+  exprMat <- assay(hepa_scMerge, "scMerge")
+  liver <- newCellDataSet(exprMat, expressionFamily = uninormal(), phenoData = pd, featureData=fd)
+  liver <- estimateSizeFactors(liver)
+  
+  liver <- setOrderingFilter(liver,HVG)
+  liver <- reduceDimension(liver, max_components=2, method = "DDRTree",norm_method ="none")
+  liver <- orderCells(liver)
+  table(pData(liver)$cellType,pData(liver)$State)
+  
+  # Ahsg gene is meant to be lowly expressed in hepatoblasts and then highly expressed in hepatocytes
+  # thus we can tell that the lower branch is the root state
+  root_state = levels(pData(liver)$State)[which.min(tapply(exprMat["Ahsg",],pData(liver)$State, mean))]
+  chol_state = levels(pData(liver)$State)[which.max(tapply(exprMat["Epcam",],pData(liver)$State, mean))]
+  hep_state = setdiff(levels(pData(liver)$State), c(root_state, chol_state))
+  
+  states = c("Hepatoblast","Cholangiocyte","Hepatocyte")
+  names(states) = c(root_state, chol_state, hep_state)
+  
+  g1 = plot_cell_trajectory(liver, color_by="State", cell_size = 3, x = 2, y = 1) +
+    scale_y_reverse() +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    theme(axis.title = element_text(size = 20)) +
+    theme(legend.position = "bottom") +
+    scale_color_tableau(labels = states) +
+    theme(legend.text = element_text(size = 17)) +
+    labs(color = "") +
+    guides(color = guide_legend(reverse = TRUE)) +
+    NULL
+  g1
+  ggsave(g1, file = "output/hepa_monocle.pdf",height = 6, width = 6)
+  
+  # add bounding boxes to the monocle graphs
+  liver$nameStates = states[as.character(liver$State)]
+  dimred_liver = t(liver@reducedDimS)
+  expandRange = function(range, diff = 0.5){
+    return(c(range[1]-diff, range[2] + diff))
+  }
+  bounding_df_liver_first = data.frame(
+    x = expandRange(range(dimred_liver[liver$nameStates %in% c("Hepatoblast"),1]))[c(1,2,2,1,1)],
+    y = expandRange(range(dimred_liver[liver$nameStates %in% c("Hepatoblast"),2]), diff = 0.5)[c(1,1,2,2,1)]
+  )
+  g11 = g1 + geom_path(data = bounding_df_liver_first, aes(x = y, y = x), 
+                       linetype = "dashed", colour = "red",
+                       size = 1) +
+    NULL
+  g11  
+  ggsave(g11, file = "output/hepa_monocle_box_first.pdf", height = 6, width = 6)
+  
+  bounding_df_liver_hep = data.frame(
+    x = expandRange(range(dimred_liver[liver$nameStates %in% c("Hepatoblast", "Hepatocyte"),1]))[c(1,2,2,1,1)],
+    y = expandRange(range(dimred_liver[liver$nameStates %in% c("Hepatoblast", "Hepatocyte"),2]), diff = 0.5)[c(1,1,2,2,1)]
+  )
+  g12 = g1 + geom_path(data = bounding_df_liver_hep, aes(x = y, y = x), 
+                       linetype = "dashed", colour = "red",
+                       size = 1) +
+    NULL
+  g12
+  ggsave(g12, file = "output/hepa_monocle_box_hep.pdf", height = 6, width = 6)
+  
+  # highlight where the 5 points are
+  pointvals = round(seq(1,sum(liver$nameStates %in% c("Hepatoblast", "Hepatocyte")), length.out = 5))
+  ps = liver$Pseudotime
+  names(ps) <- colnames(liver)
+  ps <- ps[liver$nameStates %in% c("Hepatoblast", "Hepatocyte")]
+  pointnames = names(sort(ps))[pointvals]
+  
+  ps_df = pData(liver)[pointnames,]
+  ps_df$Component1 = t(liver@reducedDimS[,pointnames])[,1]
+  ps_df$Component2 = t(liver@reducedDimS[,pointnames])[,2]
+  
+  g12plus = g12 + geom_point(data = ps_df, aes(x = Component2, y = Component1),
+                             inherit.aes = FALSE, size = 3)
+  g12plus
+  ggsave(g12plus, file = "output/hepa_monocle_box_hep_pointdots.pdf", height = 6, width = 6)
+  
+  bounding_df_liver_chol = data.frame(
+    x = expandRange(range(dimred_liver[liver$nameStates %in% c("Hepatoblast", "Cholangiocyte"),1]))[c(1,2,2,1,1)],
+    y = expandRange(range(dimred_liver[liver$nameStates %in% c("Hepatoblast", "Cholangiocyte"),2]), diff = 0.5)[c(1,1,2,2,1)]
+  )
+  g13 = g1 + geom_path(data = bounding_df_liver_chol, aes(x = y, y = x), 
+                       linetype = "dashed", colour = "red",
+                       size = 1) +
+    NULL
+  g13  
+  ggsave(g13, file = "output/hepa_monocle_box_chol.pdf", height = 6, width = 6)
+  
+  g2 = plot_cell_trajectory(liver, color_by="batch")
+  g3 = plot_cell_trajectory(liver, color_by="cellType")
+  plottingmarkergenes = c("Gapdh","Sall4", "Epcam","Ahsg")
+  
+  sapply(plottingmarkergenes, function(mark) {
+    g4 = plot_cell_trajectory(liver, markers=mark, 
+                              use_color_gradient = TRUE, 
+                              begin = 0, end = 1,
+                              markers_linear = TRUE,
+                              cell_size = 3,
+                              x = 2, y = 1) + 
+      scale_y_reverse() +
+      xlab("") + ylab("") +
+      theme(axis.ticks = element_blank()) +
+      theme(axis.text = element_blank()) +
+      theme(axis.title = element_text(size = 20)) +
+      theme(strip.text = element_text(size = 30, face = "italic")) +
+      theme(legend.position = "bottom") +
+      theme(legend.text = element_text(size = 17)) +
+      theme(legend.key.width = unit(1, "inches")) +
+      theme(legend.key.height = unit(0.1, "inches")) +
+      scale_color_viridis_c(breaks = c(0,10),
+                            limits = c(0,10),
+                            labels = c("Low","High")) +
+      scale_color_viridis_c() +
+      labs(color = "Expression") +
+      xlab(ifelse(mark == "Gapdh", "Expression", " ")) +
+      xlab("") +
+      guides(color = guide_colourbar(title.position = "top",
+                                     title.hjust = 0.5)) +
+      theme(legend.position = ifelse(mark == "Gapdh", "bottom", "none")) +
+      theme(legend.title = element_text(size = 20)) +
+      NULL
+    g4
+    if (mark == "Gapdh") {
+      g4 = g4 + scale_color_viridis_c(breaks = c(0,13),
+                                      limits = c(0,13),
+                                      labels = c("Low","High")) +
+        NULL
+      gg4 = as_ggplot(get_legend(g4))
+      g4 = gg4
+    }
+    ggsave(g4, file = paste0("output/hepa_monocle_", mark, ".pdf"),height = 6, width = 6)
+  })
+  
+  liver$Estage = regmatches(colnames(liver), regexpr("E[0-9][0-9].[0-9]", colnames(liver)))
+  g6 = plot_cell_trajectory(liver, color_by="Estage", cell_size = 3,
+                            x = 2, y = 1) +
+    scale_y_reverse() +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    theme(axis.title = element_text(size = 20)) +
+    theme(legend.position = "top") +
+    scale_colour_brewer(palette = "Oranges") +
+    xlab("") + ylab("") +
+    theme(legend.text = element_text(size = 20)) +
+    labs(color = "") +
+    NULL
+  g6
+  ggsave(g6, file = "output/hepa_monocle_Estage.pdf",height = 6, width = 6)
+  
+  g5 = plot_cell_trajectory(liver, markers="Epcam", 
+                            use_color_gradient = TRUE, 
+                            begin = 0, end = 1,
+                            markers_linear = TRUE)
+  
+  
+  pData(liver)$TrajectoryState = states[as.character(pData(liver)$State)]
+  
+  liver <- orderCells(liver,root_state = root_state)
+  
+  liver
+  
+  saveRDS(root_state, file = "output/root_state.Rds")
+  saveRDS(HVG, file = "output/HVG.Rds")
+  saveRDS(liver, file = "output/liver_pseudotime.Rds")
+} else {
+  liver = readRDS("output/liver_pseudotime.Rds")
+  HVG = readRDS("output/HVG.Rds")
+  root_state = readRDS("output/root_state.Rds")
+}
+```
+
+# Build specific liver data matrices
+
+```{r}
+if (!file.exists("output/liver_branch_data.RData")) {
+  head(pData(liver))
+  
+  plot(pData(liver)$Pseudotime, pData(liver)$State)
+  
+  # expressed_genes
+  # require at least 20% of cells to express at least 3
+  hist(apply(liver,1,quantile, 0.9))
+  liver_hepa_genes = sort(union(rownames(liver)[apply(liver,1,quantile, 0.8) > 5], HVG))
+  length(liver_hepa_genes)
+  
+  liver_expressed = liver[liver_hepa_genes,]
+  
+  # order cells based on pseudotime
+  # decided what are the values based on manual checking of the States
+  # manu check shows state 3 is stem, state 2 is hep, state 1 is chol
+  branch_cells_hep = pData(liver_expressed)[pData(liver_expressed)$State %in% c(root_state, hep_state),]
+  branch_cells_chol = pData(liver_expressed)[pData(liver_expressed)$State %in% c(root_state, chol_state),]
+  
+  # obtain the name of cells that represents the ranking
+  branch_cells_order_hep = rownames(sort_df(branch_cells_hep,"Pseudotime"))
+  branch_cells_order_chol = rownames(sort_df(branch_cells_chol,"Pseudotime"))
+  
+  # Generate the gene expression for the hep and chol branches
+  liver_branch_hep = exprs(liver_expressed[,branch_cells_order_hep])
+  liver_branch_chol = exprs(liver_expressed[,branch_cells_order_chol])
+  
+  # retain the pseudotime estimates
+  liver_pseudotime = liver$Pseudotime
+  names(liver_pseudotime) <- colnames(liver)
+  liver_pseudotime_hep = liver_pseudotime[colnames(liver_branch_hep)]
+  liver_pseudotime_chol = liver_pseudotime[colnames(liver_branch_chol)]
+  
+  save(liver_pseudotime_hep, liver_pseudotime_chol, 
+       liver_branch_hep, liver_branch_chol,
+       file = "output/liver_branch_data.RData")
+} else {
+  load("output/liver_branch_data.RData")
+}
+```
+
+# DE with the pseudotime as the response
+
+```{r}
+if (!file.exists("output/DE_liver.RData")) {
+  DE_hep_raw = apply(liver_branch_hep,1,function(x){
+    print("testing")
+    fit3 = lm(x ~ liver_pseudotime_hep + I(liver_pseudotime_hep^2))
+    fit2 = lm(x ~ liver_pseudotime_hep)
+    fit1 = lm(x ~ 1)
+    f_21 = anova(fit2,fit1)$`Pr(>F)`[2]
+    f_32 = anova(fit3,fit2)$`Pr(>F)`[2]
+    return(min(c(1, nrow(liver_branch_hep)*f_21, nrow(liver_branch_hep)*f_32)))
+  } )
+  
+  DE_chol_raw = apply(liver_branch_chol,1,function(x){
+    print("testing")
+    fit3 = lm(x ~ liver_pseudotime_chol + I(liver_pseudotime_chol^2))
+    fit2 = lm(x ~ liver_pseudotime_chol)
+    fit1 = lm(x ~ 1)
+    f_21 = anova(fit2,fit1)$`Pr(>F)`[2]
+    f_32 = anova(fit3,fit2)$`Pr(>F)`[2]
+    return(min(c(1, nrow(liver_branch_chol)*f_21, nrow(liver_branch_chol)*f_32)))
+  } )
+  
+  nonDE_HVG_hep = intersect(HVG, names(which(DE_hep_raw > 0.05)))
+  nonDE_HVG_chol = intersect(HVG, names(which(DE_chol_raw > 0.05)))
+  
+  save(DE_hep_raw, DE_chol_raw, nonDE_HVG_hep, nonDE_HVG_chol, file = "output/DE_liver.RData")
+} else {
+  load("output/DE_liver.RData")
+}
+```
+
+# Perform scHOT variability testing for initial branch of hepatoblasts
+
+```{r}
+weightedVarMatrixStats = function(x, y, w) {
+  require(matrixStats)
+  weightedVar(x,w)
+}
+
+n_first = length(intersect(colnames(liver_branch_chol), colnames(liver_branch_hep)))
+
+W_first = weightMatrix(n_first, span = 0.5)
+W_chol = weightMatrix(ncol(liver_branch_chol), span = 0.5*n_first/ncol(liver_branch_chol))
+W_hep = weightMatrix(ncol(liver_branch_hep), span = 0.5*n_first/ncol(liver_branch_hep))
+```
+
+## scHOT variability test for hepatocyte branch
+
+```{r}
+if (!file.exists("output/DV_hep.RData")) {
+  set.seed(500)
+  same_pairs_hep = cbind(nonDE_HVG_hep, nonDE_HVG_hep)
+  
+  hep_DV_stats = DCARSacrossNetwork(liver_branch_hep,
+                                    edgelist = same_pairs_hep,
+                                    W = W_hep,
+                                    weightedConcordanceFunction = weightedVarMatrixStats,
+                                    verbose = TRUE,
+                                    extractTestStatisticOnly = TRUE)
+  names(hep_DV_stats) <- nonDE_HVG_hep
+  
+  hep_DV_wVars = t(DCARSacrossNetwork(liver_branch_hep,
+                                      edgelist = same_pairs_hep,
+                                      W = W_hep,
+                                      weightedConcordanceFunction = weightedVarMatrixStats,
+                                      verbose = TRUE,
+                                      extractWcorSequenceOnly = TRUE))
+  rownames(hep_DV_wVars) <- nonDE_HVG_hep
+  
+  hep_DV_permstats_raw = DCARSacrossNetwork(liver_branch_hep,
+                                            edgelist = same_pairs_hep,
+                                            W = W_hep,
+                                            weightedConcordanceFunction = weightedVarMatrixStats,
+                                            verbose = TRUE,
+                                            extractPermutationTestStatistics = TRUE,
+                                            niter = 500)
+  hep_DV_permstats = lapply(hep_DV_permstats_raw, unlist)
+  names(hep_DV_permstats) <- nonDE_HVG_hep
+  
+  hep_DV_pvals = sapply(1:length(hep_DV_stats), function(i) {
+    mean(hep_DV_permstats[[i]] >= hep_DV_stats[i])
+  })
+  names(hep_DV_pvals) <- nonDE_HVG_hep
+  
+  hep_DV_fdr = p.adjust(hep_DV_pvals, method = "BH")
+  
+  save(W_hep, same_pairs_hep, hep_DV_stats, hep_DV_wVars, hep_DV_permstats, hep_DV_pvals, hep_DV_fdr,
+       file = "output/DV_hep.RData")
+} else {
+  load("output/DV_hep.RData")
+}
+```
+
+## scHOT variability test for cholangiocyte branch
+
+```{r}
+if (!file.exists("output/DV_chol.RData")) {
+  set.seed(500)
+  same_pairs_chol = cbind(nonDE_HVG_chol, nonDE_HVG_chol)
+  
+  chol_DV_stats = DCARSacrossNetwork(liver_branch_chol,
+                                     edgelist = same_pairs_chol,
+                                     W = W_chol,
+                                     weightedConcordanceFunction = weightedVarMatrixStats,
+                                     verbose = TRUE,
+                                     extractTestStatisticOnly = TRUE)
+  names(chol_DV_stats) <- nonDE_HVG_chol
+  
+  chol_DV_wVars = t(DCARSacrossNetwork(liver_branch_chol,
+                                       edgelist = same_pairs_chol,
+                                       W = W_chol,
+                                       weightedConcordanceFunction = weightedVarMatrixStats,
+                                       verbose = TRUE,
+                                       extractWcorSequenceOnly = TRUE))
+  rownames(chol_DV_wVars) <- nonDE_HVG_chol
+  
+  chol_DV_permstats_raw = DCARSacrossNetwork(liver_branch_chol,
+                                             edgelist = same_pairs_chol,
+                                             W = W_chol,
+                                             weightedConcordanceFunction = weightedVarMatrixStats,
+                                             verbose = TRUE,
+                                             extractPermutationTestStatistics = TRUE,
+                                             niter = 500)
+  chol_DV_permstats = lapply(chol_DV_permstats_raw, unlist)
+  names(chol_DV_permstats) <- nonDE_HVG_chol
+  
+  chol_DV_pvals = sapply(1:length(chol_DV_stats), function(i) {
+    mean(chol_DV_permstats[[i]] >= chol_DV_stats[i])
+  })
+  names(chol_DV_pvals) <- nonDE_HVG_chol
+  
+  chol_DV_fdr = p.adjust(chol_DV_pvals, method = "BH")
+  
+  save(W_chol, same_pairs_chol, chol_DV_stats, chol_DV_wVars, chol_DV_permstats, chol_DV_pvals, chol_DV_fdr,
+       file = "output/DV_chol.RData")
+} else {
+  load("output/DV_chol.RData")
+}
+```
+
+## Extract data for first branch and identify genes to test
+
+```{r}
+if (!file.exists("output/first_data.RData")) {
+  first = exprs(liver[,intersect(colnames(liver_branch_hep), colnames(liver_branch_chol))])
+  first_pseudotime = liver_pseudotime_chol[intersect(colnames(liver_branch_hep), colnames(liver_branch_chol))]
+  
+  var.fit <- trendVar(first, parametric = FALSE, loess.args=list(span=0.3), min.mean = 1.5, method = "loess")
+  var.out <- decomposeVar(first, var.fit)
+  plot(var.out$mean, var.out$total, pch=16, cex=0.6, xlab="Mean log-expression", 
+       ylab="Variance of log-expression")
+  curve(var.fit$trend(x), col="dodgerblue", lwd=2, add=TRUE)
+  seqvals = seq(min(var.out$mean), max(var.out$mean), length.out = 1000)
+  peakExp = seqvals[which.max(var.fit$trend(seqvals))]
+  hvg.out <- var.out[which(var.out$FDR <= 0.05 & var.out$mean > peakExp),]
+  nrow(hvg.out)
+  hvg.out <- hvg.out[order(hvg.out$bio, decreasing=TRUE),] 
+  points(var.out$mean[which(var.out$FDR <= 0.05 & var.out$mean > peakExp)], 
+         var.out$total[which(var.out$FDR <= 0.05 & var.out$mean > peakExp)], col="red", pch=16)
+  abline(v = peakExp, lty = 2, col = "black")
+  head(hvg.out)
+  HVG_first = sort(rownames(hvg.out))
+  
+  DE_first_raw = apply(first,1,function(x){
+    print("testing")
+    fit3 = lm(x ~ first_pseudotime + I(first_pseudotime^2))
+    fit2 = lm(x ~ first_pseudotime)
+    fit1 = lm(x ~ 1)
+    f_21 = anova(fit2,fit1)$`Pr(>F)`[2]
+    f_32 = anova(fit3,fit2)$`Pr(>F)`[2]
+    return(min(c(1, nrow(first)*f_21, nrow(first)*f_32)))
+  } )
+  
+  nonDE_HVG_first = intersect(HVG_first, names(which(DE_first_raw > 0.05)))
+  
+  save(first, first_pseudotime, HVG_first, nonDE_HVG_first, DE_first_raw, file = "output/first_data.RData")
+} else {
+  load("output/first_data.RData")
+}
+```
+
+## scHOT variability test for first branch
+
+```{r}
+if (!file.exists("output/first_DV.RData")) {
+  set.seed(500)
+  W_first = weightMatrix(ncol(first), span = 0.5)
+  same_pairs_first = cbind(nonDE_HVG_first, nonDE_HVG_first)
+  rownames(same_pairs_first) <- nonDE_HVG_first
+  first_DV_stats = DCARSacrossNetwork(first,
+                                      edgelist = same_pairs_first,
+                                      W = W_first,
+                                      weightedConcordanceFunction = weightedVarMatrixStats,
+                                      verbose = TRUE,
+                                      extractTestStatisticOnly = TRUE)
+  names(first_DV_stats) <- nonDE_HVG_first
+  first_DV_wVars = t(DCARSacrossNetwork(first,
+                                        edgelist = same_pairs_first,
+                                        W = W_first,
+                                        weightedConcordanceFunction = weightedVarMatrixStats,
+                                        verbose = TRUE,
+                                        extractWcorSequenceOnly = TRUE))
+  rownames(first_DV_wVars) <- nonDE_HVG_first
+  
+  if (parallel) {
+    split_df = split.data.frame(same_pairs_first, rep(1:ncores, length.out = nrow(same_pairs_first)))
+    names(split_df) <- NULL
+    first_DV_permstats_raw = mclapply(split_df, function(s) {
+      res = DCARSacrossNetwork(first,
+                               edgelist = s,
+                               W = W_first,
+                               weightedConcordanceFunction = weightedVarMatrixStats,
+                               verbose = TRUE,
+                               extractPermutationTestStatistics = TRUE,
+                               niter = 1000)
+      res = lapply(res, unlist)
+      names(res) <- rownames(s)
+      return(res)
+    }, mc.cores = ncores)
+    first_DV_permstats = unlist(first_DV_permstats_raw, recursive = FALSE)
+    first_DV_permstats = first_DV_permstats[rownames(same_pairs_first)]
+  } else {
+    first_DV_permstats_raw = DCARSacrossNetwork(first,
+                                                edgelist = same_pairs_first,
+                                                W = W_first,
+                                                weightedConcordanceFunction = weightedVarMatrixStats,
+                                                verbose = TRUE,
+                                                extractPermutationTestStatistics = TRUE,
+                                                niter = 1000)
+    first_DV_permstats = lapply(first_DV_permstats_raw, unlist)
+    names(first_DV_permstats) <- nonDE_HVG_first
+  }
+  
+  first_DV_pvals = sapply(1:length(first_DV_stats), function(i){
+    mean(first_DV_permstats[[i]] >= first_DV_stats[i])
+  })
+  names(first_DV_pvals) <- nonDE_HVG_first
+  first_DV_fdr = p.adjust(first_DV_pvals, method = "BH")
+  
+  save(W_first, same_pairs_first, first_DV_stats, first_DV_wVars, first_DV_permstats, first_DV_pvals, first_DV_fdr, file = "output/first_DV.RData")
+} else {
+  load("output/first_DV.RData")
+}
+
+first_sig = names(which(sort(first_DV_fdr)<0.1))
+dim(first_sig)
+matplot(t(first_DV_wVars[first_sig, ]), type = "l")
+# changes all appear monotonic
+
+# class genes into gain or loss or variability
+sig_class = ifelse(first_DV_wVars[first_sig, ncol(first_DV_wVars)] > first_DV_wVars[first_sig, 1],
+       "gain","loss")
+table(sig_class)
+sort(sig_class)
+
+matplot(t(first_DV_wVars[names(which(sig_class == "gain")), ]), type = "l", 
+        col = "black", lty = 1)
+matplot(t(first_DV_wVars[names(which(sig_class == "loss")), ]), type = "l", 
+        col = "black", lty = 1)
+
+genesOfInterest = c("Birc5","H2afz","Tacc3", "Hmgcs2")
+gList = sapply(genesOfInterest, function(i) {
+  require(patchwork)
+df = data.frame(
+  rank = 1:ncol(first),
+  pseudotime = first_pseudotime,
+  expr = first[i,],
+  mean = apply(W_first, 1, function(w) weightedMean(first[i,], w)),
+  var = first_DV_wVars[i,],
+  sd = sqrt(first_DV_wVars[i,])
+)
+df$lower = df$mean - df$sd
+df$upper = df$mean + df$sd
+
+g1 = ggplot(df, aes(x = pseudotime, y = expr)) + 
+  geom_point() +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, colour = NA) +
+  geom_line(aes(y = mean)) + 
+  theme_minimal() +
+  theme(legend.position = "none") +
+  theme(panel.grid = element_blank()) +
+  ggtitle(ifelse(is.numeric(i),nonDE_HVG_first[i], i))  +
+  theme(axis.title = element_text(size = 15)) +
+  theme(plot.title = element_text(face = "italic")) +
+  theme(axis.line.x = element_line(color="black", size = 0.5),
+        axis.line.y = element_line(color="black", size = 0.5)) +
+  xlab(ifelse(i == genesOfInterest[1],"Pseudotime","")) +
+  ylab(ifelse(i == genesOfInterest[1],"Expression","")) +
+  NULL
+
+g2 = DCARS::plotOrderedExpression(list(Hepatocye = liver_branch_hep, Cholangiocyte = liver_branch_chol),
+                             gene = i, 
+                             xvals = list(Hepatocye = liver_pseudotime_hep, Cholangiocyte = liver_pseudotime_chol)) + 
+  xlab("Pseudotime") + 
+  ylab("Expression") +
+  theme(panel.grid = element_blank()) + 
+  facet_grid(branch~.) + 
+  theme(legend.position = "none") +
+  geom_vline(xintercept = max(first_pseudotime), linetype = "dashed", colour = "darkgrey", size = 2) +
+  NULL
+
+g1 + g2 + plot_layout(ncol = 1, heights = c(1,2))
+
+return(g1)
+}, simplify = FALSE)
+g_first_DV_examples = wrap_plots(gList, nrow = 1)
+g_first_DV_examples
+ggsave(g_first_DV_examples, file = "output/first_DV_gain_ribbon_examples.pdf",
+       height = 3, width = 10)
+
+df_gain_raw = sapply(names(which(sig_class == "gain")), function(i){
+  df = data.frame(
+    rank = 1:ncol(first),
+    pseudotime = first_pseudotime,
+    expr = first[i,],
+    mean = apply(W_first, 1, function(w) weightedMean(first[i,], w)),
+    var = first_DV_wVars[i,],
+    sd = sqrt(first_DV_wVars[i,])
+  )
+  df$lower = df$mean - df$sd
+  df$upper = df$mean + df$sd
+  df$gene = i
+  return(df)
+}, simplify = FALSE)
+df_gain = do.call(rbind, df_gain_raw)
+
+g = ggplot(df_gain, aes(x = pseudotime, y = expr, group = gene)) + 
+  geom_point(alpha = 0.5) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, colour = NA) +
+  theme_classic() +
+  facet_wrap(gene~., scales = "free") +
+  theme(legend.position = "none") +
+  theme(panel.grid = element_blank()) +
+   theme(axis.line.x = element_line(color="black", size = 0.5),
+        axis.line.y = element_line(color="black", size = 0.5)) +
+  theme(strip.text = element_text(face = "italic")) +
+  ggtitle("Genes gaining variability in first branch of hepatoblasts") +
+  NULL
+g
+ggsave(g, file = "output/first_DV_gain_ribbon.pdf", height = 16, width = 20)
+
+df_loss_raw = sapply(names(which(sig_class == "loss")), function(i){
+  df = data.frame(
+    rank = 1:ncol(first),
+    pseudotime = first_pseudotime,
+    expr = first[i,],
+    mean = apply(W_first, 1, function(w) weightedMean(first[i,], w)),
+    var = first_DV_wVars[i,],
+    sd = sqrt(first_DV_wVars[i,])
+  )
+  df$lower = df$mean - df$sd
+  df$upper = df$mean + df$sd
+  df$gene = i
+  return(df)
+}, simplify = FALSE)
+df_loss = do.call(rbind, df_loss_raw)
+
+g = ggplot(df_loss, aes(x = pseudotime, y = expr, group = gene)) + 
+  geom_point(alpha = 0.5) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, colour = NA) +
+ theme_classic() +
+  facet_wrap(gene~., scales = "free", nrow = 2) +
+  theme(legend.position = "none") +
+  theme(panel.grid = element_blank()) +
+  theme(strip.text = element_text(face = "italic")) +
+  ggtitle("Genes losing variability in first branch of hepatoblasts") +
+  NULL
+g
+ggsave(g, file = "output/first_DV_loss_ribbon.pdf", height = 10, width = 20)
+```
+
+## GO testing for scHOT variable genes in first branch
+
+```{r}
+if (!file.exists("output/GO_list.Rds")) {
+  library(GO.db)
+  library(org.Mm.eg.db)
+  keys = keys(org.Mm.eg.db)
+  columns(org.Mm.eg.db)
+  GO_info = AnnotationDbi::select(org.Mm.eg.db, keys=keys, columns = c("SYMBOL", "GO"))
+  
+  keep = GO_info$SYMBOL %in% rownames(liver)
+  table(keep)
+  GO_info_filt = GO_info[keep,]
+  
+  # at least 10 genes in the term and less than 500
+  allTerms = names(which(table(GO_info_filt$GO) >= 10 & table(GO_info_filt$GO) <= 500))
+  
+  GO_info_terms = AnnotationDbi::select(GO.db, columns = columns(GO.db), keys = allTerms)
+  rownames(GO_info_terms) <- GO_info_terms$GOID
+  
+  allTermNames = GO_info_terms[allTerms, "TERM"]
+  names(allTermNames) <- allTerms
+  
+  GO_list = sapply(allTerms, function(term) {
+    print(term)
+    genes = GO_info_filt[GO_info_filt$GO == term, "SYMBOL"]
+    return(sort(unique(genes[!is.na(genes)])))
+  }, simplify = FALSE)
+  names(GO_list) <- allTermNames
+  
+  saveRDS(GO_list, file = "output/GO_list.Rds")
+} else {
+  GO_list = readRDS("output/GO_list.Rds")
+}
+
+first_DV_genes = list(gain = names(which(sig_class == "gain")),
+                      loss = names(which(sig_class == "loss")))
+
+first_DV_genes_GO = lapply(first_DV_genes, function(set){
+  genesetGOtest(set, rownames(liver), GO_list)
+})
+
+gList = lapply(first_DV_genes_GO, function(pval) {
+  df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
+                  pval = pval)
+  df$label = df$term
+  df$label[pval != 1] <- ""
+  df_sorted = sort_df(df, "pval")[1:10,]
+  df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
+  
+  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = pval < 0.01)) +
+    theme_classic() +
+    geom_col() +
+    coord_flip() +
+    xlab("") +
+    ylab(expression("-log10(P-value)")) +
+    geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
+    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "grey")) +
+    theme(legend.position = "none") +
+    theme(axis.text.y = element_text(size = 10)) +
+    theme(title = element_text(hjust = 0.5)) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 30)) +
+    NULL
+  return(g)
+  
+})
+gList[[1]] <- gList[[1]] + ggtitle("Gain of variability")
+gList[[2]] <- gList[[2]] + ggtitle("Loss of variability")
+gList_first_DV = patchwork::wrap_plots(gList, nrow = 1)
+ggsave(gList_first_DV, file = "output/first_DV_GO.pdf",height = 4.5, width = 9)
+ggsave(gList[[1]], file = "output/first_DV_gain_GO.pdf",height = 4.5, width = 4.5)
+ggsave(gList[[2]], file = "output/first_DV_loss_GO.pdf",height = 4.5, width = 4.5)
+```
+
+## Compare DV of the first branch variability of hepatocyte and cholangiocyte branches
+
+```{r}
+sig_gain = c(names(which(sig_class == "gain")), names(which(sig_class == "loss")))
+
+chol_DV_wVars_sig_gain = t(DCARSacrossNetwork(liver_branch_chol,
+                                         edgelist = cbind(sig_gain,sig_gain),
+                                         W = W_chol,
+                                         weightedConcordanceFunction = weightedVarMatrixStats,
+                                         verbose = TRUE,
+                                         extractWcorSequenceOnly = TRUE))
+rownames(chol_DV_wVars_sig_gain) <- sig_gain
+
+hep_DV_wVars_sig_gain = t(DCARSacrossNetwork(liver_branch_hep,
+                                        edgelist = cbind(sig_gain,sig_gain),
+                                        W = W_hep,
+                                        weightedConcordanceFunction = weightedVarMatrixStats,
+                                        verbose = TRUE,
+                                        extractWcorSequenceOnly = TRUE))
+rownames(hep_DV_wVars_sig_gain) <- sig_gain
+
+first_DV_wVars_sig_gain = first_DV_wVars[sig_gain,]
+
+first_wVAR_comparison_df_chol = data.frame(
+  branch = "chol",
+  gene = rep(rownames(chol_DV_wVars_sig_gain), ncol(chol_DV_wVars_sig_gain)),
+  position = rep(1:ncol(chol_DV_wVars_sig_gain), each = nrow(chol_DV_wVars_sig_gain)),
+  wVAR = c(chol_DV_wVars_sig_gain),
+  pseudotime = liver_pseudotime_chol[rep(1:ncol(chol_DV_wVars_sig_gain), each = nrow(chol_DV_wVars_sig_gain))]
+)
+first_wVAR_comparison_df_hep = data.frame(
+  branch = "hep",
+  gene = rep(rownames(hep_DV_wVars_sig_gain), ncol(hep_DV_wVars_sig_gain)),
+  position = rep(1:ncol(hep_DV_wVars_sig_gain), each = nrow(hep_DV_wVars_sig_gain)),
+  wVAR = c(hep_DV_wVars_sig_gain),
+  pseudotime = liver_pseudotime_hep[rep(1:ncol(hep_DV_wVars_sig_gain), each = nrow(hep_DV_wVars_sig_gain))]
+)
+first_wVAR_comparison_df_first = data.frame(
+  branch = "first",
+  gene = rep(rownames(first_DV_wVars_sig_gain[sig_gain,]), ncol(first_DV_wVars_sig_gain[sig_gain,])),
+  position = rep(1:ncol(first_DV_wVars_sig_gain[sig_gain,]), each = nrow(first_DV_wVars_sig_gain[sig_gain,])),
+  wVAR = c(first_DV_wVars_sig_gain[sig_gain,]),
+  pseudotime = liver_pseudotime_chol[rep(1:ncol(first_DV_wVars_sig_gain[sig_gain,]), each = nrow(first_DV_wVars_sig_gain[sig_gain,]))]
+)
+first_wVAR_comparison_df = rbind(
+  first_wVAR_comparison_df_chol,
+  first_wVAR_comparison_df_hep,
+  first_wVAR_comparison_df_first
+)
+first_wVAR_comparison_df$chol_isnonDE = first_wVAR_comparison_df$gene %in% nonDE_HVG_chol
+first_wVAR_comparison_df$hep_isnonDE = first_wVAR_comparison_df$gene %in% nonDE_HVG_hep
+
+ggplot(first_wVAR_comparison_df, aes(x = pseudotime, y = wVAR, group = branch, colour = branch)) + 
+  geom_line(size = 2) + 
+  facet_wrap(chol_isnonDE~gene) +
+  theme_minimal() +
+  NULL
+
+g1 = ggplot(subset(first_wVAR_comparison_df, chol_isnonDE & hep_isnonDE), 
+            aes(x = position, y = wVAR, group = branch, colour = branch)) + 
+  geom_line(size = 2) + 
+  facet_wrap(~gene, scales = "free") +
+  theme_minimal() +
+  ggtitle("not DE in either") +
+  geom_vline(xintercept = length(first_pseudotime)) +
+  NULL
+g1
+g2 = ggplot(subset(first_wVAR_comparison_df, !chol_isnonDE & hep_isnonDE), 
+            aes(x = position, y = wVAR, group = branch, colour = branch)) + 
+  geom_line(size = 2) + 
+  facet_wrap(~gene, scales = "free") +
+  theme_minimal() +
+  ggtitle("DE only in chol") +
+  geom_vline(xintercept = length(first_pseudotime)) +
+  NULL
+g2
+g3 = ggplot(subset(first_wVAR_comparison_df, chol_isnonDE & !hep_isnonDE), 
+            aes(x = position, y = wVAR, group = branch, colour = branch)) + 
+  geom_line(size = 2) + 
+  facet_wrap(~gene, scales = "free") +
+  theme_minimal() +
+  ggtitle("DE only in hep") +
+  geom_vline(xintercept = length(first_pseudotime)) +
+  NULL
+g3
+g4 = ggplot(subset(first_wVAR_comparison_df, !chol_isnonDE & !hep_isnonDE), 
+            aes(x = position, y = wVAR, group = branch, colour = branch)) + 
+  geom_line(size = 2) + 
+  facet_wrap(~gene, scales = "free") +
+  theme_minimal() +
+  ggtitle("DE in both hep and chol") +
+  geom_vline(xintercept = length(first_pseudotime)) +
+  NULL
+g4
+
+ggsave(g1, file = "output/first_wVAR_comparison_1.pdf",height = 10, width = 12)
+ggsave(g2, file = "output/first_wVAR_comparison_2.pdf",height = 10, width = 12)
+ggsave(g3, file = "output/first_wVAR_comparison_3.pdf",height = 10, width = 12)
+ggsave(g4, file = "output/first_wVAR_comparison_4.pdf",height = 10, width = 12)
+
+first_wVAR_comparison_df$branch = factor(first_wVAR_comparison_df$branch, levels = c("hep", "chol", "first"))
+
+genesOfInterest = c("Birc5","H2afz","Tacc3", "Hmgcs2")
+gList = sapply(genesOfInterest, function(geneOfInterest) {
+g5 = ggplot(subset(first_wVAR_comparison_df, gene %in% geneOfInterest), 
+            aes(x = position, y = wVAR, group = branch, colour = branch,
+                alpha = branch, size = branch)) + 
+  geom_line() + 
+  theme_minimal() +
+  theme(legend.position = "none") +
+  ggtitle(geneOfInterest) +
+  theme(panel.grid = element_blank()) +
+  xlab("Pseudotime ranking") +
+  ylab("Local weighted variance") +
+  geom_vline(xintercept = length(first_pseudotime)) +
+  scale_colour_tableau() +
+  scale_alpha_manual(values = c("chol" = 0.5, "hep" = 0.5, "first" = 1)) +
+  scale_size_manual(values = c("chol" = 1, "hep" = 1, "first" = 2)) +
+  theme(axis.title = element_text(size = 15)) +
+  theme(plot.title = element_text(face = "italic")) +
+  theme(axis.line.x = element_line(color="black", size = 0.5),
+        axis.line.y = element_line(color="black", size = 0.5)) +
+  xlab(ifelse(geneOfInterest == genesOfInterest[1],"Pseudotime ranking","")) +
+ylab(ifelse(geneOfInterest == genesOfInterest[1],"Local weighted variance","")) +
+  NULL
+return(g5)
+}, simplify = FALSE)
+gList_DV_lines = wrap_plots(gList, nrow = 1)
+gList_DV_lines
+ggsave(gList_DV_lines, file = "output/first_DV_gain_lines_examples.pdf",
+       height = 3, width = 10)
+``` 
+
+# Perform scHOT correlation testing for all pairs of selected genes
+
+## First calculate weighted correlation vectors
+
+```{r}
+# calculate the wcors for all the ordering genes pairs
+if (!file.exists("output/exprs_HVG.RData")) {
+  hep_exprs_HVG = exprs(liver)[nonDE_HVG_hep, names(liver_pseudotime_hep)]
+  chol_exprs_HVG = exprs(liver)[nonDE_HVG_chol, names(liver_pseudotime_chol)]
+  save(hep_exprs_HVG, chol_exprs_HVG, file = "output/exprs_HVG.RData")
+} else {
+  load("output/exprs_HVG.RData")
+}
+
+# HVG calculated over entire trajectory cells
+pairs = t(combn(sort(HVG), 2))
+rownames(pairs) <- apply(pairs,1,paste0, collapse = "_")
+
+pairs_hep_all = t(combn(sort(nonDE_HVG_hep), 2))
+rownames(pairs_hep_all) <- apply(pairs_hep_all,1,paste0, collapse = "_")
+
+pairs_chol_all = t(combn(sort(nonDE_HVG_chol), 2))
+rownames(pairs_chol_all) <- apply(pairs_chol_all,1,paste0, collapse = "_")  
+
+if (!file.exists("output/all_wcors.RData")) {
+
+  pairs_hep_all = t(combn(sort(nonDE_HVG_hep), 2))
+  rownames(pairs_hep_all) <- apply(pairs_hep_all,1,paste0, collapse = "_")
+  
+  pairs_chol_all = t(combn(sort(nonDE_HVG_chol), 2))
+  rownames(pairs_chol_all) <- apply(pairs_chol_all,1,paste0, collapse = "_")  
+  
+  W_hep = weightMatrix(ncol(hep_exprs_HVG), span = 0.25)
+  
+  if (parallel) {
+    pairs_hep_split = split.data.frame(pairs_hep_all, rep(1:ncores, length.out = nrow(pairs_hep_all)))
+    wcors_hep_raw = mclapply(pairs_hep_split, function(pairs){
+      t(DCARSacrossNetwork(hep_exprs_HVG,
+                           edgelist = pairs,
+                           W = W_hep,
+                           extractWcorSequenceOnly = TRUE, 
+                           weightedConcordanceFunction = weightedSpearman,
+                           verbose = TRUE))
+    }, mc.cores = ncores)
+    wcors_hep = do.call(rbind, wcors_hep_raw)[rownames(pairs_hep_all),]
+  } else {
+    wcors_hep = t(DCARSacrossNetwork(hep_exprs_HVG,
+                                     edgelist = pairs_hep_all,
+                                     W = W_hep,
+                                     extractWcorSequenceOnly = TRUE, 
+                                     weightedConcordanceFunction = weightedSpearman,
+                                     verbose = TRUE))
+  }
+  
+  W_chol = weightMatrix(ncol(chol_exprs_HVG), span = 0.25)
+  
+  if (parallel) {
+    pairs_chol_split = split.data.frame(pairs_chol_all, rep(1:ncores, length.out = nrow(pairs_chol_all)))
+    wcors_chol_raw = mclapply(pairs_chol_split, function(pairs){
+      t(DCARSacrossNetwork(chol_exprs_HVG,
+                           edgelist = pairs,
+                           W = W_chol,
+                           extractWcorSequenceOnly = TRUE, 
+                           weightedConcordanceFunction = weightedSpearman,
+                           verbose = TRUE))
+    }, mc.cores = ncores)
+    wcors_chol = do.call(rbind, wcors_chol_raw)[rownames(pairs_chol_all),]
+  } else {
+    wcors_chol = t(DCARSacrossNetwork(chol_exprs_HVG,
+                                      edgelist = pairs_chol_all,
+                                      W = W_chol,
+                                      extractWcorSequenceOnly = TRUE, 
+                                      weightedConcordanceFunction = weightedSpearman,
+                                      verbose = TRUE))
+  }
+  
+  save(wcors_hep, wcors_chol, W_chol, W_hep, pairs_chol_all, pairs_hep_all, file = "output/all_wcors.RData")
+  
+} else {
+  load("output/all_wcors.RData")
+}
+```
+
+## Calculate permutation statistics for a subset of hepatocyte genepairs
+
+```{r}
+if (!file.exists("output/hep_permstats.Rdata")) {
+  set.seed(500)
+  hep_stats_all = apply(wcors_hep,1,sd)
+  hep_globalCor_all = apply(pairs_hep_all, 1, function(x)
+    cor(hep_exprs_HVG[x[1],], hep_exprs_HVG[x[2],], method = "spearman")
+  )
+  hep_sample = DCARS::stratifiedSample(hep_globalCor_all, length = 500)
+  
+  if (parallel) {
+    hep_permstats_raw = mclapply(as.list(hep_sample), function(h) {
+      DCARSacrossNetwork(hep_exprs_HVG,
+                         edgelist = pairs_hep_all[h, , drop = FALSE],
+                         W = W_hep,
+                         weightedConcordanceFunction = weightedSpearman,
+                         verbose = TRUE,
+                         extractPermutationTestStatistics = TRUE,
+                         niter = 1000)
+    }, mc.cores = ncores)
+    hep_permstats = lapply(hep_permstats_raw, unlist)
+    names(hep_permstats) <- rownames(pairs_hep_all[hep_sample,])
+  } else {
+    hep_permstats_raw = DCARSacrossNetwork(hep_exprs_HVG,
+                                           edgelist = pairs_hep_all[hep_sample,],
+                                           W = W_hep,
+                                           weightedConcordanceFunction = weightedSpearman,
+                                           verbose = TRUE,
+                                           extractPermutationTestStatistics = TRUE,
+                                           niter = 500)
+    hep_permstats = unlist(hep_permstats_raw, recursive = FALSE)
+    names(hep_permstats) <- rownames(pairs_hep_all[hep_sample,])
+  }
+  save(hep_permstats, hep_globalCor_all, hep_stats_all, file = "output/hep_permstats.Rdata")
+} else {
+  load("output/hep_permstats.Rdata")
+}
+
+if (!file.exists("output/hep_p_all.Rds")) {
+  hep_p_all = estimatePvaluesSpearman(hep_stats_all, 
+                                      hep_globalCor_all, 
+                                      hep_permstats,
+                                      usenperm = FALSE,
+                                      nperm = 10000,
+                                      plot = TRUE,
+                                      maxDist = 0.1,
+                                      verbose = TRUE)
+  hep_p_all$fdr <- p.adjust(hep_p_all$pval, method = "BH")
+  saveRDS(hep_p_all, file = "output/hep_p_all.Rds")
+} else {
+  hep_p_all <- readRDS("output/hep_p_all.Rds")
+}
+```
+
+## Calculate permutation statistics for a subset of cholangiocyte genepairs
+
+```{r}
+if (!file.exists("output/chol_permstats.Rdata")) {
+  set.seed(500)
+  chol_stats_all = apply(wcors_chol,1,sd)
+  chol_globalCor_all = apply(pairs_chol_all, 1, function(x)
+    cor(chol_exprs_HVG[x[1],], chol_exprs_HVG[x[2],], method = "spearman")
+  )
+  chol_sample = DCARS::stratifiedSample(chol_globalCor_all, length = 500)
+  
+  if (parallel) {
+    chol_permstats_raw = mclapply(as.list(chol_sample), function(h) {
+      DCARSacrossNetwork(chol_exprs_HVG,
+                         edgelist = pairs_chol_all[h, , drop = FALSE],
+                         W = W_chol,
+                         weightedConcordanceFunction = weightedSpearman,
+                         verbose = TRUE,
+                         extractPermutationTestStatistics = TRUE,
+                         niter = 1000)
+    }, mc.cores = ncores)
+    chol_permstats = lapply(chol_permstats_raw, unlist)
+    names(chol_permstats) <- rownames(pairs_chol_all[chol_sample,])
+  } else {
+    chol_permstats_raw = DCARSacrossNetwork(chol_exprs_HVG,
+                                           edgelist = pairs_chol_all[chol_sample,],
+                                           W = W_chol,
+                                           weightedConcordanceFunction = weightedSpearman,
+                                           verbose = TRUE,
+                                           extractPermutationTestStatistics = TRUE,
+                                           niter = 500)
+    chol_permstats = unlist(chol_permstats_raw, recursive = FALSE)
+    names(chol_permstats) <- rownames(pairs_chol_all[chol_sample,])
+  }
+  save(chol_permstats, chol_globalCor_all, chol_stats_all, file = "output/chol_permstats.Rdata")
+} else {
+  load("output/chol_permstats.Rdata")
+}
+
+if (!file.exists("output/chol_p_all.Rds")) {
+  chol_p_all = estimatePvaluesSpearman(chol_stats_all, 
+                                      chol_globalCor_all, 
+                                      chol_permstats,
+                                      usenperm = FALSE,
+                                      nperm = 10000,
+                                      plot = TRUE,
+                                      maxDist = 0.1,
+                                      verbose = TRUE)
+  chol_p_all$fdr <- p.adjust(chol_p_all$pval, method = "BH")
+  saveRDS(chol_p_all, file = "output/chol_p_all.Rds")
+} else {
+  chol_p_all <- readRDS("output/chol_p_all.Rds")
+}
+```
+
+## Graph null distributions and global correlations
+
+```{r}
+globalCors_hep = hep_p_all$globalCor
+names(globalCors_hep) <- rownames(hep_p_all)
+
+globalCors_chol = chol_p_all$globalCor
+names(globalCors_chol) <- rownames(chol_p_all)
+
+permstatsDF_hep = data.frame(
+  branch = "hep",
+  genepair = rep(names(hep_permstats), 
+                 times = unlist(lapply(hep_permstats, function(x) length(unlist(x))))), 
+  stat = unlist(hep_permstats))
+
+permstatsDF_hep$globalCor = globalCors_hep[as.character(permstatsDF_hep$genepair)]
+
+df_99_hep = data.frame(
+  branch = "hep",
+  globalCor = globalCors_hep[names(hep_permstats)], stat =  unlist(lapply(hep_permstats, quantile, 0.99)))
+df_99_hep$fitted = loess(stat ~ globalCor, data = df_99_hep)$fitted
+
+permstatsDF_chol = data.frame(
+  branch = "chol",
+  genepair = rep(names(chol_permstats), times = unlist(lapply(chol_permstats, function(x) length(unlist(x))))), 
+  stat = unlist(chol_permstats))
+permstatsDF_chol$globalCor = globalCors_chol[as.character(permstatsDF_chol$genepair)]
+
+df_99_chol = data.frame(
+  branch = "chol",
+  globalCor = globalCors_chol[names(chol_permstats)], stat =  unlist(lapply(chol_permstats, quantile, 0.99)))
+df_99_chol$fitted = loess(stat ~ globalCor, data = df_99_chol)$fitted
+
+permstatsDF = rbind(permstatsDF_hep,
+                    permstatsDF_chol)
+
+df_99 = rbind(df_99_hep,
+              df_99_chol)
+
+g = ggplot(permstatsDF, aes(x = globalCor, y = stat, colour = branch)) + 
+  geom_scattermore() +
+  geom_point(aes(group = branch, colour = branch), data = df_99) + 
+  geom_line(aes(y = fitted, group = branch, colour = branch), data = df_99) +
+  theme_classic() + 
+  ylab("Permuted test statistic") +
+  xlab("Global correlation") +
+  theme(panel.grid = element_blank())
+ggsave(g, file = "output/stats_globalCor.pdf", height = 8, width = 8)
+```
+
+## Interrogate significant genepairs for hepatocyte branch
+
+```{r}
+FDR_level = 0.2
+
+pairs_hep_sig = pairs_hep_all[rownames(subset(hep_p_all, fdr < FDR_level)),]
+wcors_hep_sig = wcors_hep[rownames(pairs_hep_sig),]
+
+dim(pairs_hep_sig)
+length(unique(c(pairs_hep_sig)))
+
+wcors_hep_sig_smooth = t(apply(wcors_hep_sig,1,function(x){
+  loess(x ~ I(1:length(x)))$fitted
+}))
+
+hc = hclust(dist(wcors_hep_sig_smooth, method = "maximum"), method = "ward.D2")
+
+wcors_hep_sig_clusterGenes = cutreeDynamic(
+    hc, 
+    minClusterSize = 10, 
+    method = "tree",
+    deepSplit = TRUE,
+    useMedoids = TRUE
+    )
+k_hep = length(unique(wcors_hep_sig_clusterGenes))
+k_hep
+wcors_hep_sig_clusterGenes = cutree(hc, k = k_hep-1)
+names(wcors_hep_sig_clusterGenes) <- hc$labels
+
+saveRDS(wcors_hep_sig_clusterGenes, file = "output/wcors_hep_sig_clusterGenes.Rds")
+
+hep_sig_table = cbind(hep_p_all[rownames(pairs_hep_sig),], cluster = wcors_hep_sig_clusterGenes)
+
+wcors_hep_sig_clusterGenes_list = lapply(split(names(wcors_hep_sig_clusterGenes), wcors_hep_sig_clusterGenes), function(h) sort(unique(c(pairs_hep_all[h,]))))
+length(wcors_hep_sig_clusterGenes_list)
+wcors_hep_sig_mean = apply(wcors_hep_sig, 2, function(x){
+  tapply(x,wcors_hep_sig_clusterGenes, mean)
+})
+sigOrder = rev(paste0("Cluster ",rownames(wcors_hep_sig_mean)[heatmap.2(wcors_hep_sig_mean)$rowInd]))
+
+pdf("output/clustered_wcor_hep.pdf", height = 10, width = 8)
+heatmap.2(wcors_hep_sig_mean, trace = "n", Colv = FALSE, 
+          col = colorRampPalette(c("blue","white","red"))(100),
+          margins = c(8,8),
+          main = "Hepatocyte")
+dev.off()
+
+wcors_hep_sigLong = reshape::melt(t(wcors_hep_sig))
+wcors_hep_sigLong$cluster = paste0("Cluster ", wcors_hep_sig_clusterGenes[as.character(wcors_hep_sigLong$X2)])
+wcors_hep_sigLong$cluster <- factor(wcors_hep_sigLong$cluster, 
+                                    levels = sigOrder
+)
+gh = geom_hline(yintercept = 0, linetype = "dotted", colour = "red", size = 1)
+g = ggplot(
+  wcors_hep_sigLong,
+  aes(x = X1, y = value, group = X2)) +
+  theme_minimal() + 
+  theme(panel.grid = element_blank()) +
+  ylim(c(-1,1)) +
+  theme(axis.line.x = element_line(color="black", size = 0.5),
+        axis.line.y = element_line(color="black", size = 0.5)) +
+  xlab("Pseudotime") +
+  ylab("Local weighted correlation") +
+  NULL
+numSummary_df = data.frame(cluster = sort(unique(wcors_hep_sigLong$cluster)),
+                           num = tapply(wcors_hep_sigLong$X2, wcors_hep_sigLong$cluster, length)/max(wcors_hep_sigLong$X1))
+g1 = g + 
+  geom_line() + 
+  theme(axis.text.x = element_blank()) +
+  theme(axis.line.y = element_line()) +
+  facet_wrap(~cluster, ncol = length(unique(wcors_hep_sigLong$cluster)), scales = "free") +
+  theme(strip.text = element_text(size = 12)) +
+  geom_text(data = numSummary_df, 
+            aes(label = paste0(num, " gene pairs")), 
+            x = 200, y = -0.8, inherit.aes = FALSE) + 
+  xlab("Pseudotime Ranking") +
+  theme(axis.title = element_text(size = 15)) +
+  theme(axis.line.y = element_line()) +
+  scale_y_continuous(breaks = c(-1,0,1), labels = c(-1,0,1), limits = c(-1, 1)) +
+  geom_hline(yintercept = 0, colour = "black", linetype = "solid", size = 0.5) +
+  NULL
+g1
+ggsave(g1, file = "output/hep_wcors_all_clustered.pdf", height = 3.5, width = 1.6*length(unique(wcors_hep_sigLong$cluster)))
+
+wcors_hep_sig_clusterGenes_membership = do.call(cbind, lapply(wcors_hep_sig_clusterGenes_list, function(x){
+  v = 1*(sort(unique(unlist(wcors_hep_sig_clusterGenes_list))) %in% x)
+  names(v) <- sort(unique(unlist(wcors_hep_sig_clusterGenes_list)))
+  return(v)
+}))
+
+jacDist = (t(wcors_hep_sig_clusterGenes_membership) %*% wcors_hep_sig_clusterGenes_membership) / (nrow(wcors_hep_sig_clusterGenes_membership) - ((1 - t(wcors_hep_sig_clusterGenes_membership)) %*% (1 - wcors_hep_sig_clusterGenes_membership)))
+
+heatmap.2(jacDist, trace = "n", main = "Jaccard distance of genes within clusters", 
+          density.info = "none",
+          key.title = "",
+          key.xlab = "Jaccard distance",
+          symm = TRUE, 
+          revC = TRUE,
+          col = colorRampPalette(c("black","yellow")))
+```
+
+## GO testing for hepatocyte branch
+
+```{r}
+if (!file.exists("output/hep_superclusterGenes_GO.Rds")) {
+  hep_superclusterGenes_GO = lapply(wcors_hep_sig_clusterGenes_list, function(set) {
+    print("testing..")
+    genesetGOtest(set, rownames(liver), GO_list)
+  }
+  )
+  saveRDS(hep_superclusterGenes_GO, file = "output/hep_superclusterGenes_GO.Rds")
+} else {
+  hep_superclusterGenes_GO = readRDS("output/hep_superclusterGenes_GO.Rds")
+}
+
+gList = lapply(hep_superclusterGenes_GO, function(pval) {
+  df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
+                  pval = pval)
+  df$label = df$term
+  df$label[pval != 1] <- ""
+  df_sorted = sort_df(df, "pval")[1:10,]
+  df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
+  
+  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = pval < 0.01)) +
+    theme_classic() +
+    geom_col() +
+    coord_flip() +
+    xlab("") +
+    ylab(expression("-log10(P-value)")) +
+    geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
+    scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "black")) +
+    theme(legend.position = "none") +
+    NULL
+  return(g)
+})
+
+gList_named = sapply(seq_len(length(gList)), function(i){
+  g = gList[[i]] +
+    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "red")) +
+    ggtitle(paste0("Cluster ",names(gList)[i])) +
+    theme(axis.text.y = element_text(size = 10)) +
+    theme(title = element_text(hjust = 0.5)) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 40)) +
+    NULL
+  ggsave(g, file = paste0("output/hep_superclusters_GO_", i, ".pdf"),
+         height = 4, width = 7)
+  return(g)
+}, simplify = FALSE)
+g_named = patchwork::wrap_plots(gList_named, nrow = 3)
+ggsave(g_named, file = "output/hep_superclusters_GO.pdf",height = 16, width = 20)
+```
+
+## Interrogate significant genepairs for cholangiocyte branch
+
+```{r}
+pairs_chol_sig = pairs_chol_all[rownames(subset(chol_p_all, fdr < FDR_level)),]
+dim(pairs_chol_sig)
+wcors_chol_sig = wcors_chol[rownames(pairs_chol_sig),]
+
+wcors_chol_sig_smooth = t(apply(wcors_chol_sig,1,function(x){
+  loess(x ~ I(1:length(x)))$fitted
+}))
+
+hc = hclust(dist(wcors_chol_sig_smooth, method = "maximum"), method = "ward.D2")
+
+wcors_chol_sig_clusterGenes = cutreeDynamic(
+  hc, 
+  minClusterSize = 5, 
+  method = "tree",
+  deepSplit = TRUE,
+  useMedoids = TRUE
+)
+
+length(unique(wcors_chol_sig_clusterGenes))
+wcors_chol_sig_clusterGenes = cutree(hc, k = length(unique(wcors_chol_sig_clusterGenes))-1)
+names(wcors_chol_sig_clusterGenes) <- hc$labels
+
+saveRDS(wcors_chol_sig_clusterGenes, file = "output/wcors_chol_sig_clusterGenes.Rds")
+
+length(unique(wcors_chol_sig_clusterGenes))
+
+wcors_chol_sig_clusterGenes_list = lapply(split(names(wcors_chol_sig_clusterGenes), wcors_chol_sig_clusterGenes), function(h) sort(unique(c(pairs_chol_all[h,]))))
+wcors_chol_sig_mean = apply(wcors_chol_sig, 2, function(x){
+  tapply(x,wcors_chol_sig_clusterGenes, mean)
+})
+heatmap.2(wcors_chol_sig, trace = "n", Colv = FALSE, 
+          col = colorRampPalette(c("blue","white","red"))(100),
+          margins = c(8,8), 
+          RowSideColors = tol12qualitative[wcors_chol_sig_clusterGenes])
+
+matplot(t(wcors_chol_sig_mean), type = "l", lwd = 3)
+
+wcors_chol_sig_clusterGenes_membership = do.call(cbind, lapply(wcors_chol_sig_clusterGenes_list, function(x){
+  v = 1*(sort(unique(unlist(wcors_chol_sig_clusterGenes_list))) %in% x)
+  names(v) <- sort(unique(unlist(wcors_chol_sig_clusterGenes_list)))
+  return(v)
+}))
+
+jacDist = (t(wcors_chol_sig_clusterGenes_membership) %*% wcors_chol_sig_clusterGenes_membership) / (nrow(wcors_chol_sig_clusterGenes_membership) - ((1 - t(wcors_chol_sig_clusterGenes_membership)) %*% (1 - wcors_chol_sig_clusterGenes_membership)))
+
+heatmap.2(jacDist, trace = "n", main = "Jaccard distance of genes within clusters", 
+          density.info = "none",
+          key.title = "",
+          key.xlab = "Jaccard distance",
+          symm = TRUE, 
+          revC = TRUE,
+          col = colorRampPalette(c("black","yellow")))
+
+sigOrder = rev(paste0("Cluster ",rownames(wcors_chol_sig_mean)[heatmap.2(wcors_chol_sig_mean)$rowInd]))
+
+wcors_chol_sigLong = reshape::melt(t(wcors_chol_sig))
+wcors_chol_sigLong$cluster = paste0("Cluster ", wcors_chol_sig_clusterGenes[as.character(wcors_chol_sigLong$X2)])
+wcors_chol_sigLong$cluster <- factor(wcors_chol_sigLong$cluster, 
+                                     levels = sigOrder
+)
+gh = geom_hline(yintercept = 0, linetype = "dotted", colour = "red", size = 1)
+g = ggplot(
+  wcors_chol_sigLong,
+  aes(x = X1, y = value, group = X2)) +
+  theme_minimal() + 
+  theme(panel.grid = element_blank()) +
+  ylim(c(-1,1)) +
+  theme(axis.line.x = element_line(color="black", size = 0.5),
+        axis.line.y = element_line(color="black", size = 0.5)) +
+  xlab("Pseudotime") +
+  ylab("Local weighted correlation") +
+  NULL
+numSummary_df = data.frame(cluster = sort(unique(wcors_chol_sigLong$cluster)),
+                           num = tapply(wcors_chol_sigLong$X2, wcors_chol_sigLong$cluster, length)/max(wcors_chol_sigLong$X1))
+g1 = g + 
+  geom_line() + 
+  theme(axis.text.x = element_blank()) +
+  theme(axis.line.y = element_line()) +
+  facet_wrap(~cluster, ncol = 9, scales = "free") +
+  theme(strip.text = element_text(size = 12)) +
+  geom_text(data = numSummary_df, 
+            aes(label = paste0(num, " gene pairs")), 
+            x = 200, y = -0.8, inherit.aes = FALSE) + 
+  xlab("Pseudotime Ranking") +
+  theme(axis.title = element_text(size = 15)) +
+  theme(axis.line.y = element_line()) +
+  scale_y_continuous(breaks = c(-1,0,1), labels = c(-1,0,1), limits = c(-1, 1)) +
+  geom_hline(yintercept = 0, colour = "black", linetype = "solid", size = 0.5) +
+  NULL
+g1
+ggsave(g1, file = "output/chol_wcors_all_clustered.pdf", height = 3.5, width = 1.6*length(unique(wcors_chol_sigLong$cluster)))
+```
+
+## GO testing for cholangiocyte branch
+
+```{r}
+if (!file.exists("output/chol_superclusterGenes_GO.Rds")) {
+  chol_superclusterGenes_GO = lapply(wcors_chol_sig_clusterGenes_list, function(set) {
+    print("testing..")
+    genesetGOtest(set, rownames(liver), GO_list)
+  }
+  )
+  saveRDS(chol_superclusterGenes_GO, file = "output/chol_superclusterGenes_GO.Rds")
+} else {
+  chol_superclusterGenes_GO = readRDS("output/chol_superclusterGenes_GO.Rds")
+}
+
+gList = lapply(chol_superclusterGenes_GO, function(pval) {
+  df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
+                  pval = pval)
+  df$label = df$term
+  df$label[pval != 1] <- ""
+  df_sorted = sort_df(df, "pval")[1:10,]
+  df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
+  
+  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = pval < 0.01)) +
+    theme_classic() +
+    geom_col() +
+    coord_flip() +
+    xlab("") +
+    ylab(expression("-log10(P-value)")) +
+    geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
+    scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "black")) +
+    theme(legend.position = "none") +
+    NULL
+  return(g)
+})
+
+gList_named = sapply(seq_len(length(gList)), function(i){
+  g = gList[[i]] +
+    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "red")) +
+    ggtitle(paste0("Cluster ",names(gList)[i])) +
+    theme(axis.text.y = element_text(size = 10)) +
+    theme(title = element_text(hjust = 0.5)) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 40)) +
+    NULL
+  ggsave(g, file = paste0("output/chol_superclusters_GO_", i, ".pdf"),
+         height = 4, width = 7)
+  return(g)
+}, simplify = FALSE)
+g_named = patchwork::wrap_plots(gList_named, nrow = 2)
+ggsave(g_named, file = "output/chol_superclusters_GO.pdf",height = 10, width = 20)
+```
+
+# Is observed differential correlation independent of observed differential variability?
+
+```{r}
+dv_genes_hep = names(which(hep_DV_fdr < 0.1))
+dc_genes_hep = sort(unique(c(pairs_hep_sig)))
+
+hep_genepair_type = data.frame(
+  genepair = hep_p_all$genepair,
+  gene1 = pairs_hep_all[,1],
+  gene2 = pairs_hep_all[,2],
+  sig = ifelse(hep_p_all$fdr < FDR_level, "DC", "not DC")
+)
+hep_genepair_type$gene1DV = hep_genepair_type$gene1 %in% dv_genes_hep
+hep_genepair_type$gene2DV = hep_genepair_type$gene2 %in% dv_genes_hep
+hep_genepair_type$type_sum = hep_genepair_type$gene1DV + hep_genepair_type$gene2DV
+hep_genepair_type$type = "not DV - not DV"
+hep_genepair_type$type[hep_genepair_type$type_sum == 1] <- "not DV - DV"
+hep_genepair_type$type[hep_genepair_type$type_sum == 2] <- "DV - DV"
+
+addmargins(table(hep_genepair_type$type, hep_genepair_type$sig))
+fisher.test(table(hep_genepair_type$type, hep_genepair_type$sig))
+chisq.test(table(hep_genepair_type$type, hep_genepair_type$sig))$residuals
+
+# Now for cholangiocyte branch
+
+dv_genes_chol = names(which(chol_DV_fdr < 0.1))
+dc_genes_chol = sort(unique(c(pairs_chol_sig)))
+
+chol_genepair_type = data.frame(
+  genepair = chol_p_all$genepair,
+  gene1 = pairs_chol_all[,1],
+  gene2 = pairs_chol_all[,2],
+  sig = ifelse(chol_p_all$fdr < FDR_level, "DC", "not DC")
+)
+chol_genepair_type$gene1DV = chol_genepair_type$gene1 %in% dv_genes_chol
+chol_genepair_type$gene2DV = chol_genepair_type$gene2 %in% dv_genes_chol
+chol_genepair_type$type_sum = chol_genepair_type$gene1DV + chol_genepair_type$gene2DV
+chol_genepair_type$type = "not DV - not DV"
+chol_genepair_type$type[chol_genepair_type$type_sum == 1] <- "not DV - DV"
+chol_genepair_type$type[chol_genepair_type$type_sum == 2] <- "DV - DV"
+
+addmargins(table(chol_genepair_type$type, chol_genepair_type$sig))
+fisher.test(table(chol_genepair_type$type, chol_genepair_type$sig))
+chisq.test(table(chol_genepair_type$type, chol_genepair_type$sig))$residuals
+```
+
+# Branch comparison between hepatocyte and cholangiocyte branches
+
+```{r}
+both_genes = sort(union(c(pairs_hep_all), c(pairs_chol_all)))
+
+getStrength = function(p_all, pairs, genes) {
+  
+  sumStats = sum(-log10(p_all$fdr))
+  
+  strength = sapply(genes, function(gene) {
+    sub_p = p_all[pairs[,1] == gene | pairs[,2] == gene,]
+    sum((-log10(subset(sub_p, fdr < FDR_level)$fdr)/sumStats))
+  })
+  strength[is.na(strength)] <- 0
+  
+  numZero = sum(strength == 0)
+  
+  return(strength)
+}
+
+strength_hep = getStrength(hep_p_all, pairs_hep_all, both_genes)
+strength_chol = getStrength(chol_p_all, pairs_chol_all, both_genes)
+
+strength_A = strength_hep + strength_chol
+strength_M = strength_chol - strength_hep
+
+# random cloud of points 
+if (!file.exists("output/sigCounts.Rds")) {
+  set.seed(500)
+  sigCounts = replicate(10000, {
+    
+    hep_p_all_fake = hep_p_all
+    chol_p_all_fake = chol_p_all
+    
+    fake_index_hep = sample(nrow(hep_p_all))
+    fake_index_chol = sample(nrow(chol_p_all))
+    
+    hep_p_all_fake$stat = hep_p_all$stat[fake_index_hep]
+    hep_p_all_fake$fdr = hep_p_all$fdr[fake_index_hep]
+    chol_p_all_fake$stat = chol_p_all$stat[fake_index_chol]
+    chol_p_all_fake$fdr = chol_p_all$fdr[fake_index_chol]
+  
+    strength_hep_fake = getStrength(hep_p_all_fake, pairs_hep_all, both_genes)
+    strength_chol_fake = getStrength(chol_p_all_fake, pairs_chol_all, both_genes)
+    
+    strength_A_fake = strength_hep_fake + strength_chol_fake
+    strength_M_fake = strength_chol_fake - strength_hep_fake
+    
+    cos_angle = strength_M_fake / strength_A_fake
+    
+    sigCount = 1*(sqrt(strength_A_fake^2 + strength_M_fake^2) >= sqrt(strength_A^2 + strength_M^2))
+    return(sigCount)
+  })
+  saveRDS(sigCounts, file = "output/sigCounts.Rds")
+} else {
+  sigCounts = readRDS("output/sigCounts.Rds")
+}
+
+if (!file.exists("output/random_cos_angle.Rds")) {
+  set.seed(500)
+  random_cos_angle = replicate(10000, {
+    
+    hep_p_all_fake = hep_p_all
+    chol_p_all_fake = chol_p_all
+    
+    fake_index_hep = sample(nrow(hep_p_all))
+    fake_index_chol = sample(nrow(chol_p_all))
+    
+    hep_p_all_fake$stat = hep_p_all$stat[fake_index_hep]
+    hep_p_all_fake$fdr = hep_p_all$fdr[fake_index_hep]
+    chol_p_all_fake$stat = chol_p_all$stat[fake_index_chol]
+    chol_p_all_fake$fdr = chol_p_all$fdr[fake_index_chol]
+    
+    strength_hep_fake = getStrength(hep_p_all_fake, pairs_hep_all, both_genes)
+    strength_chol_fake = getStrength(chol_p_all_fake, pairs_chol_all, both_genes)
+    
+    strength_A_fake = strength_hep_fake + strength_chol_fake
+    strength_M_fake = strength_chol_fake - strength_hep_fake
+    
+    cos_angle = strength_M_fake / strength_A_fake
+    return(cos_angle)
+  })
+  saveRDS(random_cos_angle, file = "output/random_cos_angle.Rds")
+} else {
+  random_cos_angle = readRDS("output/random_cos_angle.Rds")
+}
+
+MA_pval = rowMeans(sigCounts)
+
+cos_angle = strength_M / strength_A
+dim(random_cos_angle)
+
+angle_pval = sapply(names(cos_angle), function(gene) {
+  mean(abs(random_cos_angle[gene,]) > abs(cos_angle[gene]), na.rm = TRUE)
+})
+# small p-value means branch-specific
+
+table(angle_pval > 0.05 & angle_pval < 0.95, p.adjust(MA_pval, method = "BH") < 0.05)
+names(which(angle_pval > 0.05 & angle_pval < 0.95 & p.adjust(MA_pval, method = "BH") < 0.05))
+diffGenes = names(which(angle_pval > 0.05 & angle_pval < 0.95 & p.adjust(MA_pval, method = "BH") < 0.05))
+
+strength_df = data.frame(
+  gene = both_genes,
+  strength_A = strength_A,
+  strength_M = strength_M,
+  MA_pval = MA_pval,
+  MA_fdr = p.adjust(MA_pval, method = "BH"),
+  angle_pval = angle_pval,
+  angle_fdr = p.adjust(angle_pval, method = "BH")
+)
+
+strength_df$col = "none"
+strength_df$col[strength_df$MA_fdr < 0.05 & strength_df$angle_fdr > 0.05] <- "red"
+strength_df$col[strength_df$MA_fdr < 0.05 & strength_df$angle_fdr < 0.05] <- "black"
+
+g = ggplot(strength_df, aes(x = strength_A, y = -strength_M)) + 
+  geom_point(colour = "grey") + 
+  theme_minimal() + 
+  geom_text_repel(aes(label = gene, colour = col),
+                  data = subset(strength_df, col != "none"),
+                  fontface = "italic",
+                  size = 5) +
+  geom_hline(yintercept = 0) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title = element_text(size = 15)) +
+  xlab("Gene strength sum") +
+  ylab("Gene strength difference") +
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend), arrow = arrow(), 
+               data = data.frame(x = c(0,0), xend = c(0,0),
+                                 y = c(0,0), yend = c(0.01,-0.01))) +
+  geom_text(aes(x = x, y = y, label = label),
+            data = data.frame(
+              x = c(0.0017,0.002),
+              y = c(0.01, -0.01),
+              label = c("Hepatocyte","Cholangiocyte")
+            )) +
+  theme(axis.text = element_blank()) +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = c("black" = "black", "red" = "red"),
+                      labels = c("black" = "Branch specific",
+                                 "red" = "Common to either branch")) +
+  labs(colour = "") +
+  geom_text(data = data.frame(x = rep(0.01,2), y = -0.011 + c(0,2e-3),
+                              label = c("Branch specific","Common to \neither branch"), col = c("black","red")),
+            inherit.aes = FALSE,
+            aes(x = x, y = y, label = label, colour = col),
+            hjust = 1,
+            fontface = "bold") +
+  NULL
+g
+ggsave(g, file = "output/hep_chol_branch_comparison.pdf", height = 5, width = 5)
+```
+
+# Misc: Cdt1 and Top2a graph
+
+```{r}
+scales::show_col(tableau_color_pal("Tableau 10")(3))
+branchcols = tableau_color_pal("Tableau 10")(3)
+names(branchcols) <- c("Hepatocyte","Cholangiocyte","Hepatoblast")
+
+df = data.frame(gene1 = liver_branch_hep["Cdt1",],
+                gene2 = liver_branch_hep["Top2a",],
+                rank = rank(liver_pseudotime_hep))
+W_hep_weight = W_hep
+rownames(W_hep_weight) <- paste0("Weight_", 1:nrow(W_hep_weight))
+df = cbind(df, t(W_hep_weight))
+
+df$pseudotime <- liver_pseudotime_hep
+df$mean_gene1 <- apply(W_hep, 1, function(w) weightedMean(liver_branch_hep["Cdt1",], w))
+df$mean_gene2 <- apply(W_hep, 1, function(w) weightedMean(liver_branch_hep["Top2a",], w))
+df$var_gene1 <- hep_DV_wVars["Cdt1",]
+df$var_gene2 <- hep_DV_wVars["Top2a",]
+df$sd_gene1 <- sqrt(df$var_gene1)
+df$sd_gene2 <- sqrt(df$var_gene2)
+df$lower_gene1 = df$mean_gene1 - df$sd_gene1
+df$upper_gene1 = df$mean_gene1 + df$sd_gene1
+df$lower_gene2 = df$mean_gene2 - df$sd_gene2
+df$upper_gene2 = df$mean_gene2 + df$sd_gene2
+
+g1 = ggplot(df, aes(x = rank, y = gene1, colour = rank)) + 
+  geom_point() +
+  geom_ribbon(aes(ymin = lower_gene1, ymax = upper_gene1), alpha = 0.1, colour = NA) +
+  geom_line(aes(y = mean_gene1), size = 2) + 
+  theme_minimal() +
+  theme(legend.position = "none") +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title = element_text(size = 15)) +
+  xlab("") +
+  ylab(expression(paste(italic("Cdt1"), " Expression"))) +
+  ggtitle("") +
+  theme(plot.title = element_text(hjust = 0.5, size = 20)) +
+  scale_colour_gradient(low = branchcols["Hepatoblast"],
+                        high = branchcols["Hepatocyte"]) +
+  theme(plot.margin = unit(c(0,0,0,0), "in")) +
+  theme(axis.line.x = element_line(color="black", size = 0.5),
+        axis.line.y = element_line(color="black", size = 0.5)) +
+  NULL
+g1
+
+g2 = ggplot(df, aes(x = rank, y = gene2, colour = rank)) + 
+  geom_point() +
+  geom_ribbon(aes(ymin = lower_gene2, ymax = upper_gene2), alpha = 0.1, colour = NA) +
+  geom_line(aes(y = mean_gene2), size = 2) + 
+  theme_minimal() +
+  theme(legend.position = "none") +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title = element_text(size = 15)) +
+  xlab("Pseudotime Ranking") +
+  ylab(expression(paste(italic("Top2a"), " Expression"))) +
+  ggtitle("") +
+  theme(plot.title = element_text(hjust = 0.5, size = 5)) +
+  scale_colour_gradient(low = branchcols["Hepatoblast"],
+                        high = branchcols["Hepatocyte"]) +
+  theme(plot.margin = unit(c(0,0,0,0.2), "in")) +
+  theme(axis.line.x = element_line(color="black", size = 0.5),
+        axis.line.y = element_line(color="black", size = 0.5)) +
+  NULL
+g2
+
+g = g1 + g2 + plot_layout(ncol = 2)
+ggsave(g, file = "output/Cdt1_Top2a_ribbonPlot.pdf",height = 2.3, width = 12)
+
+gList = sapply(paste0("Weight_", round(seq(1,nrow(W_hep_weight), length.out = 5))), function(weight) {
+  ggplot(df, aes(x = gene1, y = gene2)) +
+    geom_point(aes(alpha = get(weight),
+                   size = get(weight),
+                   colour = rank),
+               pch = 16) + # , size = get(weight)
+    theme_classic() +
+    theme(panel.grid = element_blank()) +
+    theme(axis.line.x = element_line(color="black", size = 1),
+          axis.line.y = element_line(color="black", size = 1)) +
+    theme(legend.position = "none") +
+    geom_density2d(data = subset(df, get(weight) > 0), colour = "black",
+                   size = 0.5, linetype = "solid",
+                   bins = 5) +
+    xlab("") +
+    ylab("") +
+    xlim(c(0,10.2)) +
+    scale_colour_gradient(low = branchcols["Hepatoblast"],
+                          high = branchcols["Hepatocyte"]) +
+    scale_size_continuous(range = c(1, 4)) +
+    scale_alpha_continuous(range = c(0.5, 1)) +
+    theme(axis.text = element_text(size = 15)) +
+    theme(axis.title = element_text(size = 20)) +
+    xlab(ifelse(weight == "Weight_1", expression(italic("Cdt1")), "")) +
+    ylab(ifelse(weight == "Weight_1", expression(italic("Top2a")), "")) +
+    ggtitle(
+      paste0("Local cor: ", 
+             round(weightedSpearman(df$gene1, df$gene2, w = df[,weight]), 2))
+    ) +
+    theme(plot.title = element_text(size = 20)) +
+    NULL
+}, simplify = FALSE)
+
+g = wrap_plots(gList, nrow = 1)
+g
+sapply(names(gList), function(n){
+  ggsave(gList[[n]], file = paste0("output/Top2a_Cdt1_density_scatterplots_", n,".pdf"),height = 3.6, width = 3.6)
+})  
+ggsave(g, file = "output/Top2a_Cdt1_density_scatterplots.pdf",height = 3.5, width = 14)
+```
+
+```{r}
+sessionInfo()
+```
