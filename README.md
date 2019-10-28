@@ -4,3 +4,5 @@ Instructions and analysis scripts for single cell Higher Order Testing (scHOT). 
 These analyses are using publicly available data, with URLs given within the scripts.
 
 Each folder contains an .Rmd notebook and an `output` folder containing output from running these scripts. The liver data takes approximately 4 hours to run on a local machine, and the MOB data takes approximately 3 hours to run.
+
+Note that due to the large file size of `liver/output/liver_pseudotime.Rds`, this is not included within the repository, but can be generated with the .Rmd script.
