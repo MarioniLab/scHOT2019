@@ -1,12 +1,11 @@
 Bai1
 Ccng1
-Cldn11
 Dnm3
-Erbb2ip
 Fam63b
-Igf2
+Gucy1b3
 Impact
-Mtor
+Myo10
 Ntng1
-Scd2
 Smim13
+Sp8
+Tiam1

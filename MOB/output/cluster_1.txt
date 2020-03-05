@@ -9,14 +9,12 @@ Dnm1l
 Dnm3
 Fam63b
 Gucy1b3
-Impact
-Itm2c
 Luzp2
 Mlc1
 Mtor
 Myo10
 Prune2
-Scd2
 Smim13
 Sp8
+Tmem47
 Uchl1

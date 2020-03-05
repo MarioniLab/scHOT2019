@@ -1,7 +1,7 @@
 ---
 title: "scHOT analysis of Mouse Olfactory Bulb data"
 author: "Shila Ghazanfar"
-date: "26/10/2019"
+date: "05/03/2020"
 output:
        html_document:
                      toc: true
@@ -55,6 +55,9 @@ library(patchwork)
 library(ggpubr)
 library(cowplot)
 library(parallel)
+library(GGally)
+library(corrplot)
+library(UpSetR)
 ```
 
 # Process MOB data from URL
@@ -126,13 +129,18 @@ This takes a long time (approx 2 hours) to run.
 samepairs = cbind(rownames(expr), rownames(expr))
 rownames(samepairs) = samepairs[,1]
 
-DE_stats_all = DCARSacrossNetwork(expr,
-                                  samepairs,
-                                  W = W,
-                                  weightedConcordanceFunction = weightedMeanMatrixStats,
-                                  extractTestStatisticOnly = TRUE,
-                                  niter = 1000,
-                                  verbose = FALSE)
+if (!file.exists("output/DE_stats_all.Rds")) {
+  DE_stats_all = DCARSacrossNetwork(expr,
+                                    samepairs,
+                                    W = W,
+                                    weightedConcordanceFunction = weightedMeanMatrixStats,
+                                    extractTestStatisticOnly = TRUE,
+                                    niter = 1000,
+                                    verbose = FALSE)
+  saveRDS(DE_stats_all, file = "output/DE_stats_all.Rds")
+} else {
+  DE_stats_all = readRDS("output/DE_stats_all.Rds")
+}
 
 if (!file.exists("output/DE_sampled_permstats.Rdata")) {
   # Does globalCor relate to the null distribution for genes?
@@ -599,7 +607,7 @@ ggplot(df_res, aes(x = x, y = y, fill = cellsCut, colour = cellsCut)) +
   NULL
 ggsave(file = "output/cellsCluster_spatial.pdf", height = 8, width = 10)
 
-hc = hclust(dist(wcorsSig, method = "maximum"), method = "ward.D2")
+hc = hclust(dist(wcorsSig, method = "maximum"), method = "complete")
 
 genepairsClustDynamic = cutreeDynamic(
   hc, 
@@ -635,6 +643,8 @@ sapply(names(genepairs_split_genes), function(i){
 geneClustMembers = sapply(unique(genepairsClust), function(x) 
   unique(c(pairsSig[genepairsClust == x,])), simplify = FALSE)
 names(geneClustMembers) <- paste0("cluster_", unique(genepairsClust))
+saveRDS(geneClustMembers, file = "output/geneClustMembers.Rds")
+
 jacDist_pairs = expand.grid(names(geneClustMembers),names(geneClustMembers))
 jacDist_vals = apply(jacDist_pairs,1,function(x){
   if (x[1] == x[2]) return(NA)
@@ -690,7 +700,7 @@ gAll = patchwork::wrap_plots(gList_cells, ncol = length(gList_cells)/5, nrow = 5
 gAll
 ggsave(gAll, file = "output/genepairsClust_wcors.pdf", height = 5, width = 44)
 
-hc_mean_cells = hclust(dist(t(wcorsSig), method = "maximum"), method = "ward.D2")
+hc_mean_cells = hclust(dist(t(wcorsSig), method = "euclidean"), method = "complete")
 
 hc_mean_cells_groups = cutreeDynamic(
   hc_mean_cells, 
@@ -842,7 +852,13 @@ if (!file.exists("output/GO_list.Rds")) {
   GO_info_filt = GO_info[keep,]
   
   # at least 10 genes in the term and less than 500
-  allTerms = names(which(table(GO_info_filt$GO) >= 10 & table(GO_info_filt$GO) <= 500))
+  # allTerms = names(which(table(GO_info_filt$GO) >= 10 & table(GO_info_filt$GO) <= 500))
+  sizeTerms = names(which(table(GO_info_filt$GO) >= 10 & table(GO_info_filt$GO) <= 500))
+  
+  # also have at least one of the genes which we actually test
+  testTerms = subset(GO_info_filt, SYMBOL %in% intersect(HVG, nonDEgenes))$GO
+  
+  allTerms = intersect(sizeTerms, testTerms)
   
   GO_info_terms = select(GO.db, columns = columns(GO.db), keys = allTerms)
   rownames(GO_info_terms) <- GO_info_terms$GOID
@@ -875,21 +891,22 @@ if (!file.exists("output/superclusterstotest_GO.Rds")) {
 
 gList = lapply(superclusterstotest_GO, function(pval) {
   df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
-                  pval = pval)
+                  pval = pval,
+                  qval = p.adjust(pval, method = "BH"))
   df$label = df$term
   df$label[pval != 1] <- ""
   df_sorted = sort_df(df, "pval")[1:10,]
   df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
   
-  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = pval < 0.01)) +
+  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = qval < 0.05)) +
     theme_classic() +
     geom_col() +
     coord_flip() +
     xlab("") +
     ylab("-log10(P-value)") +
-    geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1) +
+    # geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1) +
     scale_x_discrete(labels = function(x) str_wrap(x, width = 30)) +
-    scale_fill_manual(values = c("TRUE" = "darkgrey", "FALSE" = "black")) +
+    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "peachpuff")) +
     theme(legend.position = "none") +
     NULL
   return(g)
@@ -911,6 +928,112 @@ gTogether = sapply(seq_len(length(gList)), function(i){
   
   return(g_1 + g_2)
 }, simplify = FALSE)
+```
+
+## Compare different span choices
+
+Using script run on cluster due to high computational demand. Note that the file
+span_output.RData is around 60MB.
+
+```{r}
+if (!file.exists("output/span_output.RData")) {
+  source("span_MOB.R")
+}
+load("output/span_output.RData")
+
+span_p_all_all = do.call(rbind, span_p_all)
+span_p_all_all$testing <- rep(names(span_p_all), 
+                                         times = unlist(lapply(span_p_all, nrow)))
+
+span_pvals = do.call(cbind,lapply(span_p_all, "[", "pval"))
+colnames(span_pvals) <- names(span_p_all)
+
+span_cor = cor(-log10(span_pvals), method = "spearman")
+
+g = ggpairs(-log10(span_pvals),
+            
+            lower = list(continuous = wrap("points", alpha = 0.3, size=0.1), 
+                         combo = wrap("dot", alpha = 0.4, size=0.2)),
+            title = "-log10(P-value)"
+)
+
+g
+ggsave(g, file = "output/span_pairs.pdf", height = 12, width = 14)
+
+
+pdf("output/span_corrplot.pdf", height = 10, width = 10)
+g_cor = corrplot(span_cor, order = "original")
+dev.off()
+
+pdf("output/span_upset.pdf", height = 10, width = 16, onefile = FALSE)
+upset(data = as.data.frame(as.matrix(1*(apply(span_pvals,2,p.adjust, method = "BH") < 0.2))),
+      sets = colnames(span_pvals),
+      order.by = "freq",
+      text.scale = 2)
+dev.off()
+
+# distribution graphs
+span_distn = data.frame(
+    quantile_999 = unlist(lapply(span_perms, function(x) unlist(lapply(x, quantile, probs = 0.999)))),
+    quantile_90 = unlist(lapply(span_perms, function(x) unlist(lapply(x, quantile, probs = 0.90)))),
+    quantile_95 = unlist(lapply(span_perms, function(x) unlist(lapply(x, quantile, probs = 0.95)))),
+    quantile_99 = unlist(lapply(span_perms, function(x) unlist(lapply(x, quantile, probs = 0.99)))),
+    global = unlist(lapply(span_global, "[", span_sampled_ind)),
+    span = rep(names(span_perms), times = unlist(lapply(span_perms, length)))
+)
+span_distn <- reshape::sort_df(span_distn, "global")
+
+span_distn$quantile_999_fitted = unsplit(lapply(split.data.frame(span_distn, span_distn$span),
+                                                           function(df){
+                                                               loess(quantile_999 ~ global, data = df)$fitted
+                                                           }), span_distn$span)
+
+span_distn$quantile_90_fitted = unsplit(lapply(split.data.frame(span_distn, span_distn$span),
+                                                          function(df){
+                                                              loess(quantile_90 ~ global, data = df)$fitted
+                                                          }), span_distn$span)
+
+span_distn$quantile_95_fitted = unsplit(lapply(split.data.frame(span_distn, span_distn$span),
+                                                          function(df){
+                                                              loess(quantile_95 ~ global, data = df)$fitted
+                                                          }), span_distn$span)
+
+span_distn$quantile_99_fitted = unsplit(lapply(split.data.frame(span_distn, span_distn$span),
+                                                          function(df){
+                                                              loess(quantile_99 ~ global, data = df)$fitted
+                                                          }), span_distn$span)
+
+span_distn$span = factor(span_distn$span,levels = names(span_perms))
+
+span_nicecolours = RColorBrewer::brewer.pal(name = "Blues", 9)
+names(span_nicecolours) <- c(rep("", 5), "0.90","0.95","0.99","0.999")
+g = ggplot(span_distn, aes(x = global))  + 
+    
+    geom_point(aes(y = quantile_999, colour = "0.999"),
+               alpha = 0.5) +#, colour = span_nicecolours[9]) +
+    geom_line(aes(y = quantile_999_fitted), colour = span_nicecolours[9]) +
+    
+    geom_point(aes(y = quantile_99, colour = "0.99"),
+               alpha = 0.5) + #, colour = span_nicecolours[8]) +
+    geom_line(aes(y = quantile_99_fitted), colour = span_nicecolours[8]) +
+    
+    geom_point(aes(y = quantile_95, colour = "0.95"),
+               alpha = 0.5) + #, colour = span_nicecolours[7]) +
+    geom_line(aes(y = quantile_95_fitted), colour = span_nicecolours[7]) +
+    
+    geom_point(aes(y = quantile_90, colour = "0.90"),
+               alpha = 0.5) + #, colour = span_nicecolours[6]) +
+    geom_line(aes(y = quantile_90_fitted), colour = span_nicecolours[6]) +
+    facet_wrap(~span, scales = "free", ncol = 4) + 
+    theme_classic() + 
+    xlab("Global higher order statistic value") +
+    ylab("Permuted scHOT test statistic quantile") +
+    scale_colour_manual(name="Quantiles",values=span_nicecolours[6:9]) +
+    theme(legend.position = "bottom") +
+    NULL
+g
+ggsave(g, file = "output/span_pvalEstimation.pdf",
+       height = 12, width = 14)
 ```
 
 ```{r}
