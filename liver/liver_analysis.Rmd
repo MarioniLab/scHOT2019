@@ -1,7 +1,7 @@
 ---
 title: "scHOT analysis of Developmental liver data"
 author: "Shila Ghazanfar"
-date: "27/10/2019"
+date: "05/03/2020"
 output:
        html_document:
                      toc: true
@@ -66,6 +66,11 @@ library(M3Drop)
 library(scMerge)
 library(corrplot)
 library(circlize)
+library(GGally)
+library(corrplot)
+library(UpSetR)
+library(minerva)
+library(energy)
 ```
 
 # Process Developmental liver data from URL
@@ -134,7 +139,6 @@ if (!file.exists("output/liver_pseudotime.Rds")) {
     geom_bar(aes(width = width_transformed, x = 0 + width_transformed/2), 
              stat = "identity", position = "fill") +
     coord_polar("y", start = 0) +
-    # facet_grid(batch ~ Estage, switch = "y") + 
     facet_grid(Estage ~ batch, switch = "y") +
     theme_minimal() +
     theme(strip.text.y = element_text(angle = 180)) +
@@ -664,14 +668,16 @@ if (!file.exists("output/first_DV.RData")) {
   load("output/first_DV.RData")
 }
 
-first_sig = names(which(sort(first_DV_fdr)<0.1))
+DV_FDR_level = 0.1
+
+first_sig = names(which(sort(first_DV_fdr)<DV_FDR_level))
 dim(first_sig)
 matplot(t(first_DV_wVars[first_sig, ]), type = "l")
 # changes all appear monotonic
 
 # class genes into gain or loss or variability
 sig_class = ifelse(first_DV_wVars[first_sig, ncol(first_DV_wVars)] > first_DV_wVars[first_sig, 1],
-       "gain","loss")
+                   "gain","loss")
 table(sig_class)
 sort(sig_class)
 
@@ -683,47 +689,47 @@ matplot(t(first_DV_wVars[names(which(sig_class == "loss")), ]), type = "l",
 genesOfInterest = c("Birc5","H2afz","Tacc3", "Hmgcs2")
 gList = sapply(genesOfInterest, function(i) {
   require(patchwork)
-df = data.frame(
-  rank = 1:ncol(first),
-  pseudotime = first_pseudotime,
-  expr = first[i,],
-  mean = apply(W_first, 1, function(w) weightedMean(first[i,], w)),
-  var = first_DV_wVars[i,],
-  sd = sqrt(first_DV_wVars[i,])
-)
-df$lower = df$mean - df$sd
-df$upper = df$mean + df$sd
-
-g1 = ggplot(df, aes(x = pseudotime, y = expr)) + 
-  geom_point() +
-  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, colour = NA) +
-  geom_line(aes(y = mean)) + 
-  theme_minimal() +
-  theme(legend.position = "none") +
-  theme(panel.grid = element_blank()) +
-  ggtitle(ifelse(is.numeric(i),nonDE_HVG_first[i], i))  +
-  theme(axis.title = element_text(size = 15)) +
-  theme(plot.title = element_text(face = "italic")) +
-  theme(axis.line.x = element_line(color="black", size = 0.5),
-        axis.line.y = element_line(color="black", size = 0.5)) +
-  xlab(ifelse(i == genesOfInterest[1],"Pseudotime","")) +
-  ylab(ifelse(i == genesOfInterest[1],"Expression","")) +
-  NULL
-
-g2 = DCARS::plotOrderedExpression(list(Hepatocye = liver_branch_hep, Cholangiocyte = liver_branch_chol),
-                             gene = i, 
-                             xvals = list(Hepatocye = liver_pseudotime_hep, Cholangiocyte = liver_pseudotime_chol)) + 
-  xlab("Pseudotime") + 
-  ylab("Expression") +
-  theme(panel.grid = element_blank()) + 
-  facet_grid(branch~.) + 
-  theme(legend.position = "none") +
-  geom_vline(xintercept = max(first_pseudotime), linetype = "dashed", colour = "darkgrey", size = 2) +
-  NULL
-
-g1 + g2 + plot_layout(ncol = 1, heights = c(1,2))
-
-return(g1)
+  df = data.frame(
+    rank = 1:ncol(first),
+    pseudotime = first_pseudotime,
+    expr = first[i,],
+    mean = apply(W_first, 1, function(w) weightedMean(first[i,], w)),
+    var = first_DV_wVars[i,],
+    sd = sqrt(first_DV_wVars[i,])
+  )
+  df$lower = df$mean - df$sd
+  df$upper = df$mean + df$sd
+  
+  g1 = ggplot(df, aes(x = pseudotime, y = expr)) + 
+    geom_point() +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, colour = NA) +
+    geom_line(aes(y = mean)) + 
+    theme_minimal() +
+    theme(legend.position = "none") +
+    theme(panel.grid = element_blank()) +
+    ggtitle(ifelse(is.numeric(i),nonDE_HVG_first[i], i))  +
+    theme(axis.title = element_text(size = 15)) +
+    theme(plot.title = element_text(face = "italic")) +
+    theme(axis.line.x = element_line(color="black", size = 0.5),
+          axis.line.y = element_line(color="black", size = 0.5)) +
+    xlab(ifelse(i == genesOfInterest[1],"Pseudotime","")) +
+    ylab(ifelse(i == genesOfInterest[1],"Expression","")) +
+    NULL
+  
+  g2 = DCARS::plotOrderedExpression(list(Hepatocye = liver_branch_hep, Cholangiocyte = liver_branch_chol),
+                                    gene = i, 
+                                    xvals = list(Hepatocye = liver_pseudotime_hep, Cholangiocyte = liver_pseudotime_chol)) + 
+    xlab("Pseudotime") + 
+    ylab("Expression") +
+    theme(panel.grid = element_blank()) + 
+    facet_grid(branch~.) + 
+    theme(legend.position = "none") +
+    geom_vline(xintercept = max(first_pseudotime), linetype = "dashed", colour = "darkgrey", size = 2) +
+    NULL
+  
+  g1 + g2 + plot_layout(ncol = 1, heights = c(1,2))
+  
+  return(g1)
 }, simplify = FALSE)
 g_first_DV_examples = wrap_plots(gList, nrow = 1)
 g_first_DV_examples
@@ -747,19 +753,23 @@ df_gain_raw = sapply(names(which(sig_class == "gain")), function(i){
 df_gain = do.call(rbind, df_gain_raw)
 
 g = ggplot(df_gain, aes(x = pseudotime, y = expr, group = gene)) + 
-  geom_point(alpha = 0.5) +
+  geom_point(alpha = 0.5, size = 0.5) +
   geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, colour = NA) +
   theme_classic() +
   facet_wrap(gene~., scales = "free") +
   theme(legend.position = "none") +
   theme(panel.grid = element_blank()) +
-   theme(axis.line.x = element_line(color="black", size = 0.5),
+  xlab("Pseudotime") + 
+  ylab("Expression") +
+  theme(axis.line.x = element_line(color="black", size = 0.5),
         axis.line.y = element_line(color="black", size = 0.5)) +
   theme(strip.text = element_text(face = "italic")) +
+  theme(axis.text.x = element_text(size = 1)) +
+  theme(axis.ticks.x = element_blank()) +
   ggtitle("Genes gaining variability in first branch of hepatoblasts") +
   NULL
 g
-ggsave(g, file = "output/first_DV_gain_ribbon.pdf", height = 16, width = 20)
+ggsave(g, file = "output/first_DV_gain_ribbon.pdf", height = 8, width = 10)
 
 df_loss_raw = sapply(names(which(sig_class == "loss")), function(i){
   df = data.frame(
@@ -780,15 +790,141 @@ df_loss = do.call(rbind, df_loss_raw)
 g = ggplot(df_loss, aes(x = pseudotime, y = expr, group = gene)) + 
   geom_point(alpha = 0.5) +
   geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, colour = NA) +
- theme_classic() +
+  theme_classic() +
   facet_wrap(gene~., scales = "free", nrow = 2) +
   theme(legend.position = "none") +
   theme(panel.grid = element_blank()) +
   theme(strip.text = element_text(face = "italic")) +
+  theme(axis.text.x = element_text(size = 1)) +
+  theme(axis.ticks.x = element_blank()) +
+  xlab("Pseudotime") + 
+  ylab("Expression") +
   ggtitle("Genes losing variability in first branch of hepatoblasts") +
   NULL
 g
-ggsave(g, file = "output/first_DV_loss_ribbon.pdf", height = 10, width = 20)
+ggsave(g, file = "output/first_DV_loss_ribbon.pdf", height = 5, width = 10)
+```
+
+
+Print this out for significantly differentially variable genes.
+
+```{r}
+first_DV_all = data.frame(
+  gene = names(first_DV_stats),
+  stat = first_DV_stats,
+  # globalVar = ,
+  pval = first_DV_pvals,
+  fdr = first_DV_fdr,
+  sig_class = sig_class[names(first_DV_stats)],
+  startVar = first_DV_wVars[,1],
+  endVar = first_DV_wVars[,ncol(first_DV_wVars)] 
+)
+
+first_DV_all_sorted = reshape::sort_df(first_DV_all, "fdr")
+write.table(first_DV_all_sorted, file = "output/first_DV_all_sorted.tsv", sep = "\t",
+            row.names = FALSE, col.names = TRUE, quote = FALSE)
+write.table(subset(first_DV_all_sorted, fdr < DV_FDR_level), file = "output/first_DV_all_sorted_sig.tsv", sep = "\t",
+            row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
+# Comparison with two sample differential variability test
+
+```{r}
+# Divide data into half/half and perform a normal-distribution based
+# F-test, and compare against scHOT testing
+
+var.test.split = 0.5
+var.test.split.inds = 1:ncol(first) %in% c(1:floor(var.test.split*ncol(first)))
+# var.test.i = 1
+
+var.test.pvals = sapply(1:length(first_DV_pvals), function(var.test.i) {
+  var.test(first[names(first_DV_pvals)[var.test.i],var.test.split.inds],
+           first[names(first_DV_pvals)[var.test.i],!var.test.split.inds])$p.value
+})
+names(var.test.pvals) <- names(first_DV_pvals)
+
+var.test.fdr = p.adjust(var.test.pvals, method = "BH")
+
+table(var.test.fdr < DV_FDR_level)
+table(first_DV_fdr < DV_FDR_level)
+
+addmargins(table(var.test.fdr < DV_FDR_level, first_DV_fdr < DV_FDR_level))
+
+plot(-log10(first_DV_pvals + 0.5*min(first_DV_pvals[first_DV_pvals != 0])), -log10(var.test.pvals), type = "n")
+text(-log10(first_DV_pvals + 0.5*min(first_DV_pvals[first_DV_pvals != 0])), -log10(var.test.pvals), labels = names(first_DV_pvals))
+abline(c(0,1), lty = 2)
+
+topNot = names(sort(var.test.fdr[first_DV_fdr >= DV_FDR_level]))[1:20]
+
+# outlierGenes = c("Tceal8", "Rian", "Rsl1d1", "Mttp", "Meg3", "Nab1", "Shcbp1")
+gList = sapply(topNot, function(gene) {
+  qplot(1:ncol(first), first[gene,]) + 
+    xlab("Pseudotime Ranking") +
+    ylab("Expression") + 
+    ggtitle(gene) +
+    theme_classic() +
+    theme(plot.title = element_text(face = "italic")) +
+    geom_vline(xintercept = max(which(var.test.split.inds)),linetype = "dashed") + 
+    # geom_text(aes(x = x, y = y, label = text), 
+    #           data = data.frame(x = max(which(var.test.split.inds)),
+    #                             y = 0,
+    #                             text = "Trajectory \n middle point"),
+    #           inherit.aes = FALSE) +
+    NULL
+}, simplify = FALSE)
+g = wrap_plots(gList)
+g
+ggsave(g, file = "output/first_DV_topNot.pdf",height = 10, width = 14)
+# a number of genes are driven by outlier expression (e.g. Tceal8, Rsl1d1)
+
+# intersection
+names(var.test.fdr)[var.test.fdr < DV_FDR_level & first_DV_fdr < DV_FDR_level]
+
+# scHOT but not variance
+names(var.test.fdr)[var.test.fdr >= DV_FDR_level & first_DV_fdr < DV_FDR_level]
+
+# variance but not scHOT
+names(var.test.fdr)[var.test.fdr < DV_FDR_level & first_DV_fdr >= DV_FDR_level]
+```
+
+## Comparison of variability along full hepatocyte trajectory
+
+```{r}
+var.test.split.inds = (1:ncol(liver_branch_hep)) %in% c(1:ncol(first))
+
+var.test.pvals = sapply(names(hep_DV_pvals), function(gene) {
+  var.test(liver_branch_hep[gene,var.test.split.inds],
+           liver_branch_hep[gene,!var.test.split.inds])$p.value
+})
+# names(var.test.pvals) <- names(hep_DV_pvals)
+var.test.fdr = p.adjust(var.test.pvals, method = "BH")
+
+gene = "Cdca8"
+plot(hep_DV_wVars[gene,])
+
+var.test.fdr[gene]
+
+g = ggplot(data.frame(index = 1:ncol(liver_branch_hep),
+                      val = liver_branch_hep[gene,],
+                      upper = mean(liver_branch_hep[gene,]) + hep_DV_wVars[gene,],
+                      lower = mean(liver_branch_hep[gene,]) - hep_DV_wVars[gene,]),
+           aes(x = index, y = val)) +
+  geom_point() + 
+  xlab("Pseudotime Ranking") + 
+  ylab("Expression") +
+  ggtitle(gene) +
+  geom_ribbon(aes(x = index, ymin = lower, ymax = upper), alpha = 0.5) + 
+  geom_vline(xintercept = max(which(var.test.split.inds)), linetype = "dotted") +
+  # geom_vline(xintercept = ncol(first)) +
+  theme_classic() + 
+  geom_text(aes(label = text), data = data.frame(index = ncol(first),
+                                                 val = 11,
+                                                 text = "Trajectory \n Decision point"),
+            inherit.aes = TRUE) +
+  theme(plot.title = element_text(face = "italic")) +
+  NULL
+g
+ggsave(g, file = paste0("output/hep_DV_", gene, ".pdf"),height = 4, width = 5)
 ```
 
 ## GO testing for scHOT variable genes in first branch
@@ -826,29 +962,32 @@ if (!file.exists("output/GO_list.Rds")) {
   GO_list = readRDS("output/GO_list.Rds")
 }
 
+GO_list_DV_first = GO_list[unlist(lapply(GO_list, function(x) any(x %in% same_pairs_first[,1])))]
+
 first_DV_genes = list(gain = names(which(sig_class == "gain")),
                       loss = names(which(sig_class == "loss")))
 
 first_DV_genes_GO = lapply(first_DV_genes, function(set){
-  genesetGOtest(set, rownames(liver), GO_list)
+  genesetGOtest(set, rownames(liver), GO_list_DV_first)
 })
 
 gList = lapply(first_DV_genes_GO, function(pval) {
   df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
-                  pval = pval)
+                  pval = pval,
+                  qval = p.adjust(pval, method = "BH"))
   df$label = df$term
   df$label[pval != 1] <- ""
   df_sorted = sort_df(df, "pval")[1:10,]
   df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
   
-  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = pval < 0.01)) +
+  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = qval < 0.05)) +
     theme_classic() +
     geom_col() +
     coord_flip() +
     xlab("") +
     ylab(expression("-log10(P-value)")) +
-    geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
-    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "grey")) +
+    # geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
+    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "peachpuff")) +
     theme(legend.position = "none") +
     theme(axis.text.y = element_text(size = 10)) +
     theme(title = element_text(hjust = 0.5)) +
@@ -871,19 +1010,19 @@ ggsave(gList[[2]], file = "output/first_DV_loss_GO.pdf",height = 4.5, width = 4.
 sig_gain = c(names(which(sig_class == "gain")), names(which(sig_class == "loss")))
 
 chol_DV_wVars_sig_gain = t(DCARSacrossNetwork(liver_branch_chol,
-                                         edgelist = cbind(sig_gain,sig_gain),
-                                         W = W_chol,
-                                         weightedConcordanceFunction = weightedVarMatrixStats,
-                                         verbose = TRUE,
-                                         extractWcorSequenceOnly = TRUE))
+                                              edgelist = cbind(sig_gain,sig_gain),
+                                              W = W_chol,
+                                              weightedConcordanceFunction = weightedVarMatrixStats,
+                                              verbose = TRUE,
+                                              extractWcorSequenceOnly = TRUE))
 rownames(chol_DV_wVars_sig_gain) <- sig_gain
 
 hep_DV_wVars_sig_gain = t(DCARSacrossNetwork(liver_branch_hep,
-                                        edgelist = cbind(sig_gain,sig_gain),
-                                        W = W_hep,
-                                        weightedConcordanceFunction = weightedVarMatrixStats,
-                                        verbose = TRUE,
-                                        extractWcorSequenceOnly = TRUE))
+                                             edgelist = cbind(sig_gain,sig_gain),
+                                             W = W_hep,
+                                             weightedConcordanceFunction = weightedVarMatrixStats,
+                                             verbose = TRUE,
+                                             extractWcorSequenceOnly = TRUE))
 rownames(hep_DV_wVars_sig_gain) <- sig_gain
 
 first_DV_wVars_sig_gain = first_DV_wVars[sig_gain,]
@@ -969,28 +1108,28 @@ first_wVAR_comparison_df$branch = factor(first_wVAR_comparison_df$branch, levels
 
 genesOfInterest = c("Birc5","H2afz","Tacc3", "Hmgcs2")
 gList = sapply(genesOfInterest, function(geneOfInterest) {
-g5 = ggplot(subset(first_wVAR_comparison_df, gene %in% geneOfInterest), 
-            aes(x = position, y = wVAR, group = branch, colour = branch,
-                alpha = branch, size = branch)) + 
-  geom_line() + 
-  theme_minimal() +
-  theme(legend.position = "none") +
-  ggtitle(geneOfInterest) +
-  theme(panel.grid = element_blank()) +
-  xlab("Pseudotime ranking") +
-  ylab("Local weighted variance") +
-  geom_vline(xintercept = length(first_pseudotime)) +
-  scale_colour_tableau() +
-  scale_alpha_manual(values = c("chol" = 0.5, "hep" = 0.5, "first" = 1)) +
-  scale_size_manual(values = c("chol" = 1, "hep" = 1, "first" = 2)) +
-  theme(axis.title = element_text(size = 15)) +
-  theme(plot.title = element_text(face = "italic")) +
-  theme(axis.line.x = element_line(color="black", size = 0.5),
-        axis.line.y = element_line(color="black", size = 0.5)) +
-  xlab(ifelse(geneOfInterest == genesOfInterest[1],"Pseudotime ranking","")) +
-ylab(ifelse(geneOfInterest == genesOfInterest[1],"Local weighted variance","")) +
-  NULL
-return(g5)
+  g5 = ggplot(subset(first_wVAR_comparison_df, gene %in% geneOfInterest), 
+              aes(x = position, y = wVAR, group = branch, colour = branch,
+                  alpha = branch, size = branch)) + 
+    geom_line() + 
+    theme_minimal() +
+    theme(legend.position = "none") +
+    ggtitle(geneOfInterest) +
+    theme(panel.grid = element_blank()) +
+    xlab("Pseudotime ranking") +
+    ylab("Local weighted variance") +
+    geom_vline(xintercept = length(first_pseudotime)) +
+    scale_colour_tableau() +
+    scale_alpha_manual(values = c("chol" = 0.5, "hep" = 0.5, "first" = 1)) +
+    scale_size_manual(values = c("chol" = 1, "hep" = 1, "first" = 2)) +
+    theme(axis.title = element_text(size = 15)) +
+    theme(plot.title = element_text(face = "italic")) +
+    theme(axis.line.x = element_line(color="black", size = 0.5),
+          axis.line.y = element_line(color="black", size = 0.5)) +
+    xlab(ifelse(geneOfInterest == genesOfInterest[1],"Pseudotime ranking","")) +
+    ylab(ifelse(geneOfInterest == genesOfInterest[1],"Local weighted variance","")) +
+    NULL
+  return(g5)
 }, simplify = FALSE)
 gList_DV_lines = wrap_plots(gList, nrow = 1)
 gList_DV_lines
@@ -1023,7 +1162,7 @@ pairs_chol_all = t(combn(sort(nonDE_HVG_chol), 2))
 rownames(pairs_chol_all) <- apply(pairs_chol_all,1,paste0, collapse = "_")  
 
 if (!file.exists("output/all_wcors.RData")) {
-
+  
   pairs_hep_all = t(combn(sort(nonDE_HVG_hep), 2))
   rownames(pairs_hep_all) <- apply(pairs_hep_all,1,paste0, collapse = "_")
   
@@ -1134,7 +1273,458 @@ if (!file.exists("output/hep_p_all.Rds")) {
 } else {
   hep_p_all <- readRDS("output/hep_p_all.Rds")
 }
+
+FDR_level = 0.2
 ```
+
+# Full permutation test
+
+Compare estimated p-values with full 10,000 permutations for all gene pairs. 
+This takes a very long time to run, was performed on the cluster.
+
+```{r}
+if (!file.exists("output/hep_full_pvals.Rds")) {
+  source("hep_all_permutations.R")
+}
+hep_full_pvals = readRDS("output/hep_full_pvals.Rds")
+
+plot(-log10(hep_full_pvals), -log10(hep_p_all$pval)); abline(c(0,1))
+cor(-log10(hep_full_pvals), -log10(hep_p_all$pval), 
+    method = "spearman", use = "p")
+
+hep_full_pvals[hep_full_pvals == 0] <- 1/10001
+
+full_p_df = data.frame(
+  gene = names(hep_full_pvals),
+  pval_all = hep_full_pvals,
+  pval_est = hep_p_all$pval
+)
+full_p_df$loess = loess(I(-log10(pval_est)) ~ I(-log10(pval_all)), data = full_p_df, span = 0.3)$fitted
+full_p_df = reshape::sort_df(full_p_df, "pval_all")
+g = ggplot(full_p_df, aes(x = -log10(pval_all), y = -log10(pval_est))) + 
+  geom_point(colour = "darkgrey", alpha = 0.7) +
+  geom_line(aes(y = loess), colour = "red") +
+  theme_classic() +
+  xlab("P-value (10,000 permutations each)") +
+  ylab("Estimated P-value") +
+  geom_vline(xintercept = 2, linetype = "dashed", colour = "grey") +
+  geom_hline(yintercept = 2, linetype = "dashed", colour = "grey") +
+  geom_abline(slope = 1, intercept = 0, colour = "black") +
+  geom_text(x = 0.15, y = 5, label = paste0("Spearman \ncorrelation: \n ", 
+                                            round(cor(-log10(hep_full_pvals), -log10(hep_p_all$pval), 
+                                                      method = "spearman", use = "p"), 3))) +
+  NULL
+g
+ggsave(g, file = "output/hep_full_pval_scatterplot.pdf",height = 6, width = 6)
+
+fit = lm(I(-log10(pval_est)) ~ I(-log10(pval_all)), data = full_p_df)
+fit$coef
+```
+
+
+# Calculate test statistics using other underlying higher order functions and compare
+Above was done with weighted Spearman, also perform with weightedPearson,
+MIC and brownian distance correlation. The latter two with a blocked
+weightmatrix due to implementation.
+
+```{r}
+# calculate global values for each and take stratified sample of size 100 from 
+# each and take the union of these
+if (!file.exists("output/test_statistics_output.RData")) {
+  source("test_statistics_hep.R")
+}
+load("output/test_statistics_global.RData")
+load("output/test_statistics_output.RData")
+
+test_statistics_p_all_all = do.call(rbind, test_statistics_p_all)
+test_statistics_p_all_all$testing <- rep(names(test_statistics_p_all), 
+                                         times = unlist(lapply(test_statistics_p_all, nrow)))
+
+test_statistics_pvals = do.call(cbind,lapply(test_statistics_p_all, "[", "pval"))
+colnames(test_statistics_pvals) <- names(test_statistics_p_all)
+
+test_statistics_cor = cor(-log10(test_statistics_pvals), method = "spearman")
+
+g = ggpairs(-log10(test_statistics_pvals),
+            
+            lower = list(continuous = wrap("points", alpha = 0.3, size=0.1), 
+                         combo = wrap("dot", alpha = 0.4, size=0.2)),
+            title = "-log10(P-value)"
+)
+
+g
+ggsave(g, file = "output/test_statistics_pairs.pdf",height = 8, width = 8)
+
+pdf("output/test_statistics_corrplot.pdf", height = 6, width = 6)
+g_cor = corrplot(test_statistics_cor, order = "hclust")
+dev.off()
+
+pdf("output/test_statistics_upset.pdf", height = 5, width = 8, onefile = FALSE)
+upset(data = as.data.frame(as.matrix(1*(apply(test_statistics_pvals,2,p.adjust, method = "BH") < 0.2))),
+      sets = colnames(test_statistics_pvals))
+dev.off()
+
+# distribution graphs
+test_statistics_distn = data.frame(
+  quantile_999 = unlist(lapply(test_statistics_perms, function(x) unlist(lapply(x, quantile, probs = 0.999)))),
+  quantile_90 = unlist(lapply(test_statistics_perms, function(x) unlist(lapply(x, quantile, probs = 0.90)))),
+  quantile_95 = unlist(lapply(test_statistics_perms, function(x) unlist(lapply(x, quantile, probs = 0.95)))),
+  quantile_99 = unlist(lapply(test_statistics_perms, function(x) unlist(lapply(x, quantile, probs = 0.99)))),
+  global = unlist(lapply(test_statistics_global, "[", test_statistics_sampled_ind)),
+  test_statistic = rep(names(test_statistics_global), times = unlist(lapply(test_statistics_perms, length)))
+)
+test_statistics_distn <- reshape::sort_df(test_statistics_distn, "global")
+
+test_statistics_distn$quantile_999_fitted = unsplit(lapply(split.data.frame(test_statistics_distn, test_statistics_distn$test_statistic),
+                                                           function(df){
+                                                             loess(quantile_999 ~ global, data = df)$fitted
+                                                           }), test_statistics_distn$test_statistic)
+
+test_statistics_distn$quantile_90_fitted = unsplit(lapply(split.data.frame(test_statistics_distn, test_statistics_distn$test_statistic),
+                                                          function(df){
+                                                            loess(quantile_90 ~ global, data = df)$fitted
+                                                          }), test_statistics_distn$test_statistic)
+
+test_statistics_distn$quantile_95_fitted = unsplit(lapply(split.data.frame(test_statistics_distn, test_statistics_distn$test_statistic),
+                                                          function(df){
+                                                            loess(quantile_95 ~ global, data = df)$fitted
+                                                          }), test_statistics_distn$test_statistic)
+
+test_statistics_distn$quantile_99_fitted = unsplit(lapply(split.data.frame(test_statistics_distn, test_statistics_distn$test_statistic),
+                                                          function(df){
+                                                            loess(quantile_99 ~ global, data = df)$fitted
+                                                          }), test_statistics_distn$test_statistic)
+
+test_statistics_distn$test_statistic = factor(test_statistics_distn$test_statistic,
+                                              levels = names(test_statistics_global))
+
+test_statistics_nicecolours = RColorBrewer::brewer.pal(name = "Blues", 9)
+names(test_statistics_nicecolours) <- c(rep("", 5), "0.90","0.95","0.99","0.999")
+g = ggplot(test_statistics_distn, aes(x = global))  + 
+  
+  geom_point(aes(y = quantile_999, colour = "0.999"),
+             alpha = 0.5) +#, colour = test_statistics_nicecolours[9]) +
+  geom_line(aes(y = quantile_999_fitted), colour = test_statistics_nicecolours[9]) +
+  
+  geom_point(aes(y = quantile_99, colour = "0.99"),
+             alpha = 0.5) + #, colour = test_statistics_nicecolours[8]) +
+  geom_line(aes(y = quantile_99_fitted), colour = test_statistics_nicecolours[8]) +
+  
+  geom_point(aes(y = quantile_95, colour = "0.95"),
+             alpha = 0.5) + #, colour = test_statistics_nicecolours[7]) +
+  geom_line(aes(y = quantile_95_fitted), colour = test_statistics_nicecolours[7]) +
+  
+  geom_point(aes(y = quantile_90, colour = "0.90"),
+             alpha = 0.5) + #, colour = test_statistics_nicecolours[6]) +
+  geom_line(aes(y = quantile_90_fitted), colour = test_statistics_nicecolours[6]) +
+  facet_wrap(~test_statistic, scales = "free", ncol = 2) + 
+  theme_classic() + 
+  xlab("Global higher order statistic value") +
+  ylab("Permuted scHOT test statistic quantile") +
+  scale_colour_manual(name="Quantiles",values=test_statistics_nicecolours[6:9]) +
+  theme(legend.position = "bottom") +
+  NULL
+ggsave(g, file = "output/test_statistics_pvalEstimation.pdf",
+       height = 12, width = 10)
+```
+
+## Compare different span choices
+
+Run on cluster
+
+```{r}
+if (!file.exists("output/span_output.RData")) {
+  source("span_hep.R")
+}
+load("output/span_output.RData")
+
+span_p_all_all = do.call(rbind, span_p_all)
+span_p_all_all$testing <- rep(names(span_p_all), 
+                              times = unlist(lapply(span_p_all, nrow)))
+
+span_pvals = do.call(cbind,lapply(span_p_all, "[", "pval"))
+colnames(span_pvals) <- names(span_p_all)
+
+span_cor = cor(-log10(span_pvals), method = "spearman")
+
+pdf("output/span_corrplot.pdf", height = 10, width = 10)
+g_cor = corrplot(span_cor, order = "original")
+dev.off()
+
+pdf("output/span_upset.pdf", height = 10, width = 16, onefile = FALSE)
+upset(data = as.data.frame(as.matrix(1*(apply(span_pvals,2,p.adjust, method = "BH") < FDR_level))),
+      sets = colnames(span_pvals),
+      order.by = "freq",
+      text.scale = 2)
+dev.off()
+
+# distribution graphs
+span_distn = data.frame(
+  quantile_999 = unlist(lapply(span_perms, function(x) unlist(lapply(x, quantile, probs = 0.999)))),
+  quantile_90 = unlist(lapply(span_perms, function(x) unlist(lapply(x, quantile, probs = 0.90)))),
+  quantile_95 = unlist(lapply(span_perms, function(x) unlist(lapply(x, quantile, probs = 0.95)))),
+  quantile_99 = unlist(lapply(span_perms, function(x) unlist(lapply(x, quantile, probs = 0.99)))),
+  global = unlist(lapply(span_global, "[", span_sampled_ind)),
+  span = rep(names(span_perms), times = unlist(lapply(span_perms, length)))
+)
+span_distn <- reshape::sort_df(span_distn, "global")
+
+span_distn$quantile_999_fitted = unsplit(lapply(split.data.frame(span_distn, span_distn$span),
+                                                function(df){
+                                                  loess(quantile_999 ~ global, data = df)$fitted
+                                                }), span_distn$span)
+
+span_distn$quantile_90_fitted = unsplit(lapply(split.data.frame(span_distn, span_distn$span),
+                                               function(df){
+                                                 loess(quantile_90 ~ global, data = df)$fitted
+                                               }), span_distn$span)
+
+span_distn$quantile_95_fitted = unsplit(lapply(split.data.frame(span_distn, span_distn$span),
+                                               function(df){
+                                                 loess(quantile_95 ~ global, data = df)$fitted
+                                               }), span_distn$span)
+
+span_distn$quantile_99_fitted = unsplit(lapply(split.data.frame(span_distn, span_distn$span),
+                                               function(df){
+                                                 loess(quantile_99 ~ global, data = df)$fitted
+                                               }), span_distn$span)
+
+span_distn$span = factor(span_distn$span,levels = names(span_perms))
+
+span_nicecolours = RColorBrewer::brewer.pal(name = "Blues", 9)
+names(span_nicecolours) <- c(rep("", 5), "0.90","0.95","0.99","0.999")
+g = ggplot(span_distn, aes(x = global))  + 
+  
+  geom_point(aes(y = quantile_999, colour = "0.999"),
+             alpha = 0.5) +#, colour = span_nicecolours[9]) +
+  geom_line(aes(y = quantile_999_fitted), colour = span_nicecolours[9]) +
+  
+  geom_point(aes(y = quantile_99, colour = "0.99"),
+             alpha = 0.5) + #, colour = span_nicecolours[8]) +
+  geom_line(aes(y = quantile_99_fitted), colour = span_nicecolours[8]) +
+  
+  geom_point(aes(y = quantile_95, colour = "0.95"),
+             alpha = 0.5) + #, colour = span_nicecolours[7]) +
+  geom_line(aes(y = quantile_95_fitted), colour = span_nicecolours[7]) +
+  
+  geom_point(aes(y = quantile_90, colour = "0.90"),
+             alpha = 0.5) + #, colour = span_nicecolours[6]) +
+  geom_line(aes(y = quantile_90_fitted), colour = span_nicecolours[6]) +
+  # geom_point(aes(y = quantile_99_fitted)) + 
+  facet_wrap(~span, scales = "free", ncol = 4) + 
+  theme_classic() + 
+  xlab("Global higher order statistic value") +
+  ylab("Permuted scHOT test statistic quantile") +
+  scale_colour_manual(name="Quantiles",values=span_nicecolours[6:9]) +
+  theme(legend.position = "bottom") +
+  NULL
+g
+ggsave(g, file = "output/span_pvalEstimation.pdf",
+       height = 12, width = 14)
+
+# what do the big ones and small ones look like 0.35 and below, and then 0.40 and above, and both
+
+span_selection = as.data.frame(as.matrix(1*(apply(span_pvals,2,p.adjust, method = "BH") < FDR_level)))
+
+any_span_selected = names(which(apply(span_selection,1,any)))
+low_span_selected = names(which(apply(span_selection[,1:7],1,any)))
+high_span_selected = names(which(apply(span_selection[,8:ncol(span_selection)],1,any)))
+both_span_selected = intersect(low_span_selected, high_span_selected)
+low_span_selected_only = setdiff(low_span_selected, high_span_selected)
+high_span_selected_only = setdiff(high_span_selected, low_span_selected)
+
+matplot(t(wcors_hep[low_span_selected_only,]), type = "l", col = "black", lty = 1)
+matplot(t(wcors_hep[high_span_selected_only,]), type = "l", col = "black", lty = 1)
+
+i = 10 # diff number
+wcors_hep_diff = t(apply(wcors_hep[any_span_selected,],1,function(x) loess(I(diff(x,i)) ~ I(1:(length(x) - i)))$fitted))
+wcors_hep_diff_signchanges = apply(wcors_hep_diff, 1, function(x) length(unique(x < 0)))
+prop.table(table(wcors_hep_diff_signchanges[low_span_selected_only]))
+prop.table(table(wcors_hep_diff_signchanges[high_span_selected_only]))
+matplot(t(wcors_hep_diff[low_span_selected_only,]), type = "l", col = "black", lty = 1)
+matplot(t(wcors_hep_diff[high_span_selected_only,]), type = "l", col = "red", lty = 1, add = TRUE)
+
+pdf("output/span_slopes_density.pdf",height = 8, width = 8)
+plot(density(wcors_hep_diff[low_span_selected_only,]), ylim = c(0,30), col = "blue",
+     main = "Density of slopes of local weighted correlation", lwd = 2)
+lines(density(wcors_hep_diff[high_span_selected_only,]), col = "red", lwd = 2)
+lines(density(wcors_hep_diff[any_span_selected,]), col = "black", lty = "dotted", lwd = 2)
+legend("topright", legend = c("Selected with low span only", "Selected with high span only",
+                              "Selected with any span"),
+       col = c("blue","red","black"),
+       lty = c("solid","solid","dotted"),
+       lwd = 2,
+       bty = "n")
+dev.off()
+```
+
+## Assess stability under random subsetting of the data
+
+Takes a long time so was run on the cluster.
+
+```{r}
+if (!file.exists("output/subset_output_weightmatch_noperms.RData")) {
+  source("subset_hep_weightmatch.R")
+}
+load("output/subset_output_weightmatch_noperms.RData")
+
+subset_p_all_all = do.call(rbind, subset_p_all)
+subset_p_all_all$testing <- rep(names(subset_p_all), 
+                                times = unlist(lapply(subset_p_all, nrow)))
+subset_p_all_all$testingType = unlist(lapply(strsplit(as.character(subset_p_all_all$testing), "_"), "[", 2))
+
+subset_pvals = do.call(cbind,lapply(subset_p_all, "[", "pval"))
+colnames(subset_pvals) <- names(subset_p_all)
+
+
+subset_p_all_all$fullpval = hep_p_all[as.character(subset_p_all_all$genepair),"pval"]
+subset_p_all_all$fullfdr = hep_p_all[as.character(subset_p_all_all$genepair),"fdr"]
+subset_p_all_all$select = rep("Neither", nrow(subset_p_all_all))
+subset_p_all_all[subset_p_all_all$fdr < FDR_level &
+                   subset_p_all_all$fullfdr < FDR_level,"select"] <- "Both"
+subset_p_all_all[subset_p_all_all$fdr > FDR_level &
+                   subset_p_all_all$fullfdr < FDR_level,"select"] <- "Full only"
+subset_p_all_all[subset_p_all_all$fdr < FDR_level &
+                   subset_p_all_all$fullfdr > FDR_level,"select"] <- "Subset only"
+
+subset_p_all_all$testing <- factor(subset_p_all_all$testing,
+                                   levels = rev(gtools::mixedsort(unique(as.character(subset_p_all_all$testing)))))
+
+subset_p_all_all$testing_iter = gsub("_", "", gsub("subset_0.[0-9]0", "", subset_p_all_all$testing))
+
+subset_p_all_all$testingType <- factor(subset_p_all_all$testingType,
+                                       levels = rev(gtools::mixedsort(unique(as.character(subset_p_all_all$testingType)))))
+
+g = ggplot(subset_p_all_all, aes(x = -log10(fullpval), y = -log10(pval))) + 
+  geom_scattermore(colour = "grey", pointsize = 1.5) +
+  geom_point(aes(colour = select), data = subset(subset_p_all_all, select != "Neither"),
+             size = 1) + 
+  geom_abline() +
+  # facet_grid(testingType ~ testing, drop = TRUE) +
+  facet_grid(testingType ~ testing_iter) +
+  # facet_wrap( ~ testing, ncol = 10) +
+  # gsub("_", "", gsub("subset_0.[0-9]0", "", "subset_0.90_1"))
+  xlab("Full data -log10(p-value)") +
+  ylab("Subset -log10(p-value)") +
+  scale_colour_manual(values = c("Neither" = "grey",
+                                 "Both" = "black",
+                                 "Full only" = "blue",
+                                 "Subset only" = "red")) +
+  theme_classic() +
+  theme(legend.position = "right") +
+  guides(colour = guide_legend("FDR adjusted\nP-value < 0.2 for:")) +
+  theme(strip.text.x = element_blank()) +
+  NULL
+
+ggsave(g, file = "output/subset_scatterplot.pdf", height = 8, width = 18)
+
+pdf("output/subset_qqplot.pdf",height = 3, width = 12.5)
+par(mfrow=c(1,5))
+for (i in 1:50) {
+  if (i %% 10 == 1) {
+    plot(sort(-log10(hep_p_all$pval)), sort(-log10(subset_pvals[,i])), type = "l",
+         main = paste0(gsub("subset_0.", "", names(subset_p_all)[i]), "% subset"),
+         xlab = "Full data quantiles",
+         ylab = "Subset data quantiles");abline(c(0,1), col = "red")
+  } else {
+    points(sort(-log10(hep_p_all$pval)), sort(-log10(subset_pvals[,i])), type = "l")  
+  }
+}
+dev.off()
+
+# calculate inclusion frequency for each random subset type
+subset_qvals <- apply(subset_pvals,2,p.adjust, method = "BH")
+inclusion_frequency = t(apply(subset_qvals, 1, function(x) tapply(x, substring(names(subset_p_all),1,11), function(y)mean(y < FDR_level))))
+
+subset_inclusion_frequency_df = data.frame(
+  inclusion_frequency,
+  full_pval = hep_p_all$pval,
+  full_fdr = hep_p_all$fdr
+)
+
+gList = sapply(unique(substring(names(subset_p_all),1,11)), function(sub) {
+  ggplot(subset_inclusion_frequency_df, aes(y = get(sub), x = -log10(full_pval))) + 
+    geom_point(aes(colour = full_fdr < FDR_level), show.legend = sub == "subset_0.50", alpha = 0.5) + 
+    geom_smooth(colour = "black") +
+    scale_colour_manual(values = c("TRUE" = "red", "FALSE" = "grey")) +
+    theme_classic() + 
+    xlab(ifelse(sub == "subset_0.90", "-log10(P-value) from full dataset", "")) +
+    ylab(ifelse(sub == "subset_0.90", "Proportion of selection at\nFDR adjusted P-value < 0.2 in subset", "")) + 
+    ylim(c(0,1)) +
+    ggtitle(paste0(gsub("subset_0.","", sub), "% subset")) +
+    guides(colour = guide_legend("FDR adjusted\nP-value < 0.2")) +
+    NULL
+}, simplify = FALSE)
+
+g = wrap_plots(gList, ncol = 5)
+ggsave(g, file = "output/subset_inclusion_frequency.pdf", height = 4, width = 16)
+
+
+
+
+
+subset_cor = cor(-log10(cbind(all = hep_p_all$pval, subset_pvals)), method = "spearman")
+colnames(subset_cor) <- unlist(lapply(strsplit(gsub("subset_", "", colnames(subset_cor)), "_"), "[",1))
+colnames(subset_cor)[!(1:ncol(subset_cor) %in% c(1, 6, 16, 26, 36, 46))] <- ""
+rownames(subset_cor) <- colnames(subset_cor)
+
+
+
+pdf("output/subset_corrplot.pdf", height = 5, width = 5)
+g_cor = corrplot(subset_cor, 
+                 order = "original",
+                 tl.srt = 45)
+dev.off()
+
+subset_cor_with_all = data.frame(
+  cor = subset_cor[1,],
+  testingType = paste0(c("100", 100*as.numeric(unlist(lapply(strsplit(colnames(subset_pvals), "_"), "[", 2)))), "%"),
+  testing = c("All", colnames(subset_pvals))
+)
+subset_cor_with_all$testing <- factor(subset_cor_with_all$testing, levels = 
+                                        c("All", colnames(subset_pvals)))
+subset_cor_with_all$testingType <- factor(subset_cor_with_all$testingType,
+                                          levels = rev(gtools::mixedsort(as.character(unique(subset_cor_with_all$testingType)))))
+
+g1 = ggplot(subset_cor_with_all, aes(x = testing, y = cor)) + 
+  geom_col(aes(fill = testingType)) + 
+  theme_classic() + 
+  scale_fill_viridis_d() +
+  ylab("Correlation of -log10(p-value) with full dataset") +
+  xlab("Subset percentage scenario") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  guides(fill = guide_legend("Subset\npercentage")) +
+  NULL
+g1
+ggsave(g1,file = "output/subset_correlations.pdf",height = 6,width = 10)
+```
+
+## Compare with GAM approach on derived weighted higher order statistic vectors
+
+```{r}
+library(mgcv)  # load the package
+
+# randomly subset
+wcors_subs = replicate(50, {
+  sub_ind = sort(sample(1:ncol(hep_exprs_HVG), ceiling(0.6*ncol(hep_exprs_HVG))))
+  DCARS(hep_exprs_HVG[,sub_ind],
+        xname = pairs_hep_all["Cdt1_Top2a",1],
+        yname = pairs_hep_all["Cdt1_Top2a",2],
+        W = W_hep[sub_ind,sub_ind],
+        weightedConcordanceFunction = weightedSpearman,
+        extractWcorSequenceOnly = TRUE)
+})
+
+gam_rank = rep(1:nrow(wcors_subs), 50)
+gam_response = c(wcors_subs)
+gam_fit = gam(gam_response ~ s(gam_rank))
+
+# plot(gam_rank, gam_response)
+plot(gam_fit)
+points(gam_rank, gam_response, pch = 16, cex = 0.1)
+summary(gam_fit)
+```
+
 
 ## Calculate permutation statistics for a subset of cholangiocyte genepairs
 
@@ -1161,12 +1751,12 @@ if (!file.exists("output/chol_permstats.Rdata")) {
     names(chol_permstats) <- rownames(pairs_chol_all[chol_sample,])
   } else {
     chol_permstats_raw = DCARSacrossNetwork(chol_exprs_HVG,
-                                           edgelist = pairs_chol_all[chol_sample,],
-                                           W = W_chol,
-                                           weightedConcordanceFunction = weightedSpearman,
-                                           verbose = TRUE,
-                                           extractPermutationTestStatistics = TRUE,
-                                           niter = 500)
+                                            edgelist = pairs_chol_all[chol_sample,],
+                                            W = W_chol,
+                                            weightedConcordanceFunction = weightedSpearman,
+                                            verbose = TRUE,
+                                            extractPermutationTestStatistics = TRUE,
+                                            niter = 500)
     chol_permstats = unlist(chol_permstats_raw, recursive = FALSE)
     names(chol_permstats) <- rownames(pairs_chol_all[chol_sample,])
   }
@@ -1177,13 +1767,13 @@ if (!file.exists("output/chol_permstats.Rdata")) {
 
 if (!file.exists("output/chol_p_all.Rds")) {
   chol_p_all = estimatePvaluesSpearman(chol_stats_all, 
-                                      chol_globalCor_all, 
-                                      chol_permstats,
-                                      usenperm = FALSE,
-                                      nperm = 10000,
-                                      plot = TRUE,
-                                      maxDist = 0.1,
-                                      verbose = TRUE)
+                                       chol_globalCor_all, 
+                                       chol_permstats,
+                                       usenperm = FALSE,
+                                       nperm = 10000,
+                                       plot = TRUE,
+                                       maxDist = 0.1,
+                                       verbose = TRUE)
   chol_p_all$fdr <- p.adjust(chol_p_all$pval, method = "BH")
   saveRDS(chol_p_all, file = "output/chol_p_all.Rds")
 } else {
@@ -1238,14 +1828,13 @@ g = ggplot(permstatsDF, aes(x = globalCor, y = stat, colour = branch)) +
   ylab("Permuted test statistic") +
   xlab("Global correlation") +
   theme(panel.grid = element_blank())
+g
 ggsave(g, file = "output/stats_globalCor.pdf", height = 8, width = 8)
 ```
 
 ## Interrogate significant genepairs for hepatocyte branch
 
 ```{r}
-FDR_level = 0.2
-
 pairs_hep_sig = pairs_hep_all[rownames(subset(hep_p_all, fdr < FDR_level)),]
 wcors_hep_sig = wcors_hep[rownames(pairs_hep_sig),]
 
@@ -1256,15 +1845,15 @@ wcors_hep_sig_smooth = t(apply(wcors_hep_sig,1,function(x){
   loess(x ~ I(1:length(x)))$fitted
 }))
 
-hc = hclust(dist(wcors_hep_sig_smooth, method = "maximum"), method = "ward.D2")
+hc = hclust(dist(wcors_hep_sig_smooth, method = "maximum"), method = "complete") #ward.D2
 
 wcors_hep_sig_clusterGenes = cutreeDynamic(
-    hc, 
-    minClusterSize = 10, 
-    method = "tree",
-    deepSplit = TRUE,
-    useMedoids = TRUE
-    )
+  hc, 
+  minClusterSize = 10, 
+  method = "tree",
+  deepSplit = TRUE,
+  useMedoids = TRUE
+)
 k_hep = length(unique(wcors_hep_sig_clusterGenes))
 k_hep
 wcors_hep_sig_clusterGenes = cutree(hc, k = k_hep-1)
@@ -1321,6 +1910,7 @@ g1 = g +
   theme(axis.line.y = element_line()) +
   scale_y_continuous(breaks = c(-1,0,1), labels = c(-1,0,1), limits = c(-1, 1)) +
   geom_hline(yintercept = 0, colour = "black", linetype = "solid", size = 0.5) +
+  geom_vline(xintercept = n_first, colour = "darkblue", linetype = "dashed", size = 0.5) +
   NULL
 g1
 ggsave(g1, file = "output/hep_wcors_all_clustered.pdf", height = 3.5, width = 1.6*length(unique(wcors_hep_sigLong$cluster)))
@@ -1342,13 +1932,32 @@ heatmap.2(jacDist, trace = "n", main = "Jaccard distance of genes within cluster
           col = colorRampPalette(c("black","yellow")))
 ```
 
+
+Print this out for significantly differentially correlated gene pairs,
+along with cluster ID.
+
+```{r}
+hep_p_all$sigCluster = wcors_hep_sig_clusterGenes[rownames(hep_p_all)]
+hep_p_all$startCor = wcors_hep[rownames(hep_p_all),1]
+hep_p_all$branchpointCor = wcors_hep[rownames(hep_p_all),n_first]
+hep_p_all$endCor = wcors_hep[rownames(hep_p_all),ncol(wcors_hep)]
+
+hep_p_all_sorted = reshape::sort_df(hep_p_all, "fdr")
+write.table(hep_p_all_sorted, file = "output/hep_p_all_sorted.tsv", sep = "\t",
+            row.names = FALSE, col.names = TRUE, quote = FALSE)
+write.table(subset(hep_p_all_sorted, fdr < FDR_level), file = "output/hep_p_all_sorted_sig.tsv", sep = "\t",
+            row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
 ## GO testing for hepatocyte branch
 
 ```{r}
+GO_list_hep = GO_list[unlist(lapply(GO_list, function(x) any(x %in% nonDE_HVG_hep)))]
+
 if (!file.exists("output/hep_superclusterGenes_GO.Rds")) {
   hep_superclusterGenes_GO = lapply(wcors_hep_sig_clusterGenes_list, function(set) {
     print("testing..")
-    genesetGOtest(set, rownames(liver), GO_list)
+    genesetGOtest(set, rownames(liver), GO_list_hep)
   }
   )
   saveRDS(hep_superclusterGenes_GO, file = "output/hep_superclusterGenes_GO.Rds")
@@ -1358,19 +1967,20 @@ if (!file.exists("output/hep_superclusterGenes_GO.Rds")) {
 
 gList = lapply(hep_superclusterGenes_GO, function(pval) {
   df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
-                  pval = pval)
+                  pval = pval,
+                  qval = p.adjust(pval, method = "BH"))
   df$label = df$term
   df$label[pval != 1] <- ""
-  df_sorted = sort_df(df, "pval")[1:10,]
+  df_sorted = reshape::sort_df(df, "pval")[1:10,]
   df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
   
-  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = pval < 0.01)) +
+  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = qval < 0.05)) +
     theme_classic() +
     geom_col() +
     coord_flip() +
     xlab("") +
     ylab(expression("-log10(P-value)")) +
-    geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
+    # geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
     scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "black")) +
     theme(legend.position = "none") +
     NULL
@@ -1379,18 +1989,18 @@ gList = lapply(hep_superclusterGenes_GO, function(pval) {
 
 gList_named = sapply(seq_len(length(gList)), function(i){
   g = gList[[i]] +
-    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "red")) +
+    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "peachpuff")) +
     ggtitle(paste0("Cluster ",names(gList)[i])) +
     theme(axis.text.y = element_text(size = 10)) +
     theme(title = element_text(hjust = 0.5)) +
-    scale_x_discrete(labels = function(x) str_wrap(x, width = 40)) +
+    scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 40)) +
     NULL
   ggsave(g, file = paste0("output/hep_superclusters_GO_", i, ".pdf"),
          height = 4, width = 7)
   return(g)
 }, simplify = FALSE)
 g_named = patchwork::wrap_plots(gList_named, nrow = 3)
-ggsave(g_named, file = "output/hep_superclusters_GO.pdf",height = 16, width = 20)
+ggsave(g_named, file = "output/hep_superclusters_GO.pdf",height = 10, width = 16)
 ```
 
 ## Interrogate significant genepairs for cholangiocyte branch
@@ -1404,7 +2014,7 @@ wcors_chol_sig_smooth = t(apply(wcors_chol_sig,1,function(x){
   loess(x ~ I(1:length(x)))$fitted
 }))
 
-hc = hclust(dist(wcors_chol_sig_smooth, method = "maximum"), method = "ward.D2")
+hc = hclust(dist(wcors_chol_sig_smooth, method = "maximum"), method = "complete")
 
 wcors_chol_sig_clusterGenes = cutreeDynamic(
   hc, 
@@ -1474,7 +2084,7 @@ g1 = g +
   geom_line() + 
   theme(axis.text.x = element_blank()) +
   theme(axis.line.y = element_line()) +
-  facet_wrap(~cluster, ncol = 9, scales = "free") +
+  facet_wrap(~cluster, ncol = 10, scales = "free") +
   theme(strip.text = element_text(size = 12)) +
   geom_text(data = numSummary_df, 
             aes(label = paste0(num, " gene pairs")), 
@@ -1484,6 +2094,7 @@ g1 = g +
   theme(axis.line.y = element_line()) +
   scale_y_continuous(breaks = c(-1,0,1), labels = c(-1,0,1), limits = c(-1, 1)) +
   geom_hline(yintercept = 0, colour = "black", linetype = "solid", size = 0.5) +
+  geom_vline(xintercept = n_first, colour = "darkblue", linetype = "dashed", size = 0.5) +
   NULL
 g1
 ggsave(g1, file = "output/chol_wcors_all_clustered.pdf", height = 3.5, width = 1.6*length(unique(wcors_chol_sigLong$cluster)))
@@ -1492,10 +2103,12 @@ ggsave(g1, file = "output/chol_wcors_all_clustered.pdf", height = 3.5, width = 1
 ## GO testing for cholangiocyte branch
 
 ```{r}
+GO_list_chol = GO_list[unlist(lapply(GO_list, function(x) any(x %in% nonDE_HVG_chol)))]
+
 if (!file.exists("output/chol_superclusterGenes_GO.Rds")) {
   chol_superclusterGenes_GO = lapply(wcors_chol_sig_clusterGenes_list, function(set) {
     print("testing..")
-    genesetGOtest(set, rownames(liver), GO_list)
+    genesetGOtest(set, rownames(liver), GO_list_chol)
   }
   )
   saveRDS(chol_superclusterGenes_GO, file = "output/chol_superclusterGenes_GO.Rds")
@@ -1505,19 +2118,20 @@ if (!file.exists("output/chol_superclusterGenes_GO.Rds")) {
 
 gList = lapply(chol_superclusterGenes_GO, function(pval) {
   df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
-                  pval = pval)
+                  pval = pval,
+                  qval = p.adjust(pval, method = "BH"))
   df$label = df$term
   df$label[pval != 1] <- ""
-  df_sorted = sort_df(df, "pval")[1:10,]
+  df_sorted = reshape::sort_df(df, "pval")[1:10,]
   df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
   
-  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = pval < 0.01)) +
+  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = qval < 0.05)) +
     theme_classic() +
     geom_col() +
     coord_flip() +
     xlab("") +
     ylab(expression("-log10(P-value)")) +
-    geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
+    # geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
     scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "black")) +
     theme(legend.position = "none") +
     NULL
@@ -1526,18 +2140,18 @@ gList = lapply(chol_superclusterGenes_GO, function(pval) {
 
 gList_named = sapply(seq_len(length(gList)), function(i){
   g = gList[[i]] +
-    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "red")) +
+    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "peachpuff")) +
     ggtitle(paste0("Cluster ",names(gList)[i])) +
     theme(axis.text.y = element_text(size = 10)) +
     theme(title = element_text(hjust = 0.5)) +
-    scale_x_discrete(labels = function(x) str_wrap(x, width = 40)) +
+    scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 40)) +
     NULL
   ggsave(g, file = paste0("output/chol_superclusters_GO_", i, ".pdf"),
          height = 4, width = 7)
   return(g)
 }, simplify = FALSE)
-g_named = patchwork::wrap_plots(gList_named, nrow = 2)
-ggsave(g_named, file = "output/chol_superclusters_GO.pdf",height = 10, width = 20)
+g_named = patchwork::wrap_plots(gList_named, nrow = 3)
+ggsave(g_named, file = "output/chol_superclusters_GO.pdf",height = 10, width = 16)
 ```
 
 # Is observed differential correlation independent of observed differential variability?
@@ -1627,7 +2241,7 @@ if (!file.exists("output/sigCounts.Rds")) {
     hep_p_all_fake$fdr = hep_p_all$fdr[fake_index_hep]
     chol_p_all_fake$stat = chol_p_all$stat[fake_index_chol]
     chol_p_all_fake$fdr = chol_p_all$fdr[fake_index_chol]
-  
+    
     strength_hep_fake = getStrength(hep_p_all_fake, pairs_hep_all, both_genes)
     strength_chol_fake = getStrength(chol_p_all_fake, pairs_chol_all, both_genes)
     
@@ -1702,7 +2316,8 @@ strength_df$col[strength_df$MA_fdr < 0.05 & strength_df$angle_fdr > 0.05] <- "re
 strength_df$col[strength_df$MA_fdr < 0.05 & strength_df$angle_fdr < 0.05] <- "black"
 
 g = ggplot(strength_df, aes(x = strength_A, y = -strength_M)) + 
-  geom_point(colour = "grey") + 
+  # geom_point(colour = "grey") +
+  geom_point(aes(colour = col)) +
   theme_minimal() + 
   geom_text_repel(aes(label = gene, colour = col),
                   data = subset(strength_df, col != "none"),
@@ -1710,9 +2325,9 @@ g = ggplot(strength_df, aes(x = strength_A, y = -strength_M)) +
                   size = 5) +
   geom_hline(yintercept = 0) +
   theme(panel.grid = element_blank()) +
-  theme(axis.title = element_text(size = 15)) +
+  theme(axis.title = element_text(size = 13)) +
   xlab("Gene strength sum") +
-  ylab("Gene strength difference") +
+  ylab("Gene strength difference (Hepatocyte - Cholangiocyte)") +
   geom_segment(aes(x = x, y = y, xend = xend, yend = yend), arrow = arrow(), 
                data = data.frame(x = c(0,0), xend = c(0,0),
                                  y = c(0,0), yend = c(0.01,-0.01))) +
@@ -1720,19 +2335,19 @@ g = ggplot(strength_df, aes(x = strength_A, y = -strength_M)) +
             data = data.frame(
               x = c(0.0017,0.002),
               y = c(0.01, -0.01),
-              label = c("Hepatocyte","Cholangiocyte")
+              label = c("Hepatocyte\nbranch","Cholangiocyte\nbranch")
             )) +
-  theme(axis.text = element_blank()) +
+  # theme(axis.text = element_blank()) +
   theme(legend.position = "none") +
-  scale_colour_manual(values = c("black" = "black", "red" = "red"),
+  scale_colour_manual(values = c("black" = "black", "red" = "red", "none" = "grey"),
                       labels = c("black" = "Branch specific",
                                  "red" = "Common to either branch")) +
   labs(colour = "") +
-  geom_text(data = data.frame(x = rep(0.01,2), y = -0.011 + c(0,2e-3),
+  geom_text(data = data.frame(x = rep(0.008,2), y = -0.011 + c(0,2e-3),
                               label = c("Branch specific","Common to \neither branch"), col = c("black","red")),
             inherit.aes = FALSE,
             aes(x = x, y = y, label = label, colour = col),
-            hjust = 1,
+            hjust = 0.5,
             fontface = "bold") +
   NULL
 g
