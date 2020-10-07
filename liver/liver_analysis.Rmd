@@ -92,7 +92,7 @@ if (!file.exists("output/liver_pseudotime.Rds")) {
   
   liver_scMerge <- runPCA(liver_scMerge, exprs_values = "scMerge", ncomponents = 50)
   set.seed(484)
-  liver_scMerge <- runTSNE(liver_scMerge, use_dimred = "PCA")
+  liver_scMerge <- runTSNE(liver_scMerge, exprs_values = "scMerge", use_dimred = "PCA")
   tsne_hepa = reducedDim(liver_scMerge, "TSNE")[liver_scMerge$isHepa == "Hepa",]
   bounding_df = data.frame(
     x = 1.1*range(tsne_hepa[,1])[c(1,2,2,1,1)],
